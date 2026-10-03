@@ -75,3 +75,5 @@ flutter devices
 DeviceId는 `flutter devices`에 표시되는 실제 ID로 바꿉니다. 위 스크립트는 프로세스에만 Java 임시 경로 옵션을 적용하고 기존 설정을 복구합니다. APK 출력은 `build/app/outputs/flutter-apk/app-debug.apk`입니다.
 
 Phase 1 자동 테스트 17개·APK 빌드와 사용자 수동 검증 5개를 통과했습니다. Phase 2 공통 기능은 정적 분석과 추가 자동 테스트로 검증합니다. 실제 OS 모델 실행·빌드 검증 상태는 각 브랜치의 플랫폼 검증 문서와 [프로젝트 문맥](PROJECT_CONTEXT.md)에 기록합니다. 파일 전달 방법과 과거 환경 문제는 [Phase 1 검증 기록](docs/PHASE1_VERIFICATION.md)을 참고합니다.
+
+이 브랜치의 Phase 2 빌드·모델 비교·실제 영상 화면 확인 결과와 실행 명령은 [Android 검증 기록](docs/PHASE2_ANDROID_VERIFICATION.md)에 있습니다. 일반 앱 실행에는 `.\scripts\android_phase2.ps1 -Action run -DeviceId emulator-5554`를 사용합니다.
