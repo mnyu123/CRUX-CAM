@@ -408,12 +408,52 @@ void main() {
           Duration(milliseconds: result.frames[multiple].timeMs),
         );
         await tester.pumpAndSettle();
-        await tester.ensureVisible(find.byKey(const Key('pose-preview')));
+        final previewBeforeScroll = tester.getRect(
+          find.byKey(const Key('pose-preview')),
+        );
+        await tester.ensureVisible(find.byKey(const Key('save-analysis')));
         await tester.pumpAndSettle();
+        expect(
+          tester.getRect(find.byKey(const Key('pose-preview'))),
+          previewBeforeScroll,
+        );
+        final panelRect = tester.getRect(
+          find.byKey(const Key('analysis-media-panel')),
+        );
+        for (final finder in [
+          find.text('사람 1'),
+          find.text('사람 2'),
+          find.byKey(const Key('analysis-play')),
+          find.byKey(const Key('analysis-seek')),
+        ]) {
+          final rect = tester.getRect(finder);
+          expect(panelRect.contains(rect.topLeft), isTrue);
+          expect(panelRect.contains(rect.bottomRight), isTrue);
+        }
+        // 실제 기기 테스트의 좌표 변환을 사용하는 탭으로 아래 설정을 내린 뒤 대상 변경을 확인합니다.
+        for (final id in [2, 1]) {
+          await tester.tap(find.text('사람 $id'));
+          for (
+            var i = 0;
+            i < 300 && container.read(analysisControllerProvider).busy;
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          await tester.pumpAndSettle();
+          expect(
+            container.read(analysisControllerProvider).result!.selectedPersonId,
+            id,
+          );
+          expect(
+            tester.getRect(find.byKey(const Key('pose-preview'))),
+            previewBeforeScroll,
+          );
+        }
         final binding = IntegrationTestWidgetsFlutterBinding.instance;
         if (Platform.isAndroid) await binding.convertFlutterSurfaceToImage();
         await tester.pump();
-        await binding.takeScreenshot('phase2-overlay');
+        await binding.takeScreenshot('phase2-subject-controls');
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());

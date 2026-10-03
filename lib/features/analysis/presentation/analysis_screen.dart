@@ -168,354 +168,420 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
         : result.tracked[index];
     final target = _corrected ? tracked?.corrected : tracked?.raw;
     final scheme = Theme.of(context).colorScheme;
+    // 영상과 사람 선택은 함께 고정하고, 분석 설정·결과만 별도로 스크롤합니다.
+    final settings = SingleChildScrollView(
+      key: const Key('analysis-settings'),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (state.busy) ...[
+            LinearProgressIndicator(
+              value: state.total > 0 ? state.completed / state.total : null,
+            ),
+            const SizedBox(height: 8),
+            Text(switch (state.phase) {
+              AnalysisPhase.preparing => '모델과 영상을 준비하고 있습니다…',
+              AnalysisPhase.cancelling => '분석을 취소하고 자원을 정리하고 있습니다…',
+              AnalysisPhase.tracking => '선택한 클라이머의 움직임을 연결하고 있습니다…',
+              _ => '${state.completed} / ${state.total} 프레임 분석 중',
+            }),
+            TextButton(
+              onPressed: state.phase == AnalysisPhase.cancelling
+                  ? null
+                  : _analysis.cancel,
+              child: const Text('분석 취소'),
+            ),
+          ],
+          if (state.phase == AnalysisPhase.cancelled)
+            const Text('분석을 취소했습니다. 다시 시작할 수 있습니다.'),
+          if (state.error != null || _playerError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                state.error ?? _playerError!,
+                style: TextStyle(color: scheme.error),
+              ),
+            ),
+          if (state.engines.isEmpty)
+            TextButton(
+              onPressed: () => unawaited(_analysis.loadEngines()),
+              child: const Text('분석 기능 다시 확인'),
+            ),
+          if (engine != null) ...[
+            DropdownButtonFormField<PoseEngine>(
+              initialValue: engine,
+              decoration: const InputDecoration(labelText: '분석 모델'),
+              items: state.engines
+                  .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
+                  .toList(),
+              onChanged: state.busy || state.saving
+                  ? null
+                  : (e) {
+                      if (e != null) setState(() => _engine = e);
+                    },
+            ),
+            if (engine == PoseEngine.mlKitAccurate)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'ML Kit는 한 번에 한 사람만 인식합니다. 여러 사람은 MediaPipe로 분석하거나, 놓친 사람의 영역을 추가 분석해주세요.',
+                ),
+              ),
+            if (widget.info.source.type == MediaType.video) ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: _fps,
+                decoration: const InputDecoration(labelText: '초당 분석 프레임'),
+                items: [2, 5, 10]
+                    .map((v) => DropdownMenuItem(value: v, child: Text('$v개')))
+                    .toList(),
+                onChanged: state.busy || state.saving
+                    ? null
+                    : (v) {
+                        if (v != null) setState(() => _fps = v);
+                      },
+              ),
+            ],
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              key: const Key('run-analysis'),
+              onPressed: state.busy || state.saving
+                  ? null
+                  : () => unawaited(_start(engine)),
+              icon: const Icon(Icons.accessibility_new),
+              label: Text(result == null ? '분석 시작' : '이 모델로 다시 분석'),
+            ),
+          ],
+          if (result != null) ...[
+            if (result.regions.isNotEmpty)
+              Text('추가 분석 영역 ${result.regions.length}개'),
+            if (_drawingRegion)
+              const Text(
+                '다른 사람은 제외하고 클라이머의 몸과 영상 중 이동 경로를 포함해주세요. 지정한 고정 영역을 영상 전체에서 추가 분석하므로 영역 밖으로 나가면 감지하지 못할 수 있습니다.',
+              ),
+            const Text(
+              '번호는 위치와 움직임으로 연결합니다. 겹침에서는 구분을 보류하고 긴 가림 뒤에는 새 번호가 생길 수 있으니 대상을 확인해주세요.',
+            ),
+            if (tracked != null) ...[
+              const SizedBox(height: 12),
+              Text(switch (tracked.status) {
+                TrackStatus.tracked => '대상 추적 중',
+                TrackStatus.lost => '대상을 놓쳤습니다. 몸통이 보이는 시점에서 다시 선택해주세요.',
+                TrackStatus.ambiguous => '사람이 겹쳐 대상을 구분하기 어렵습니다.',
+              }),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('관절 튐 보정'),
+                subtitle: const Text('끄면 선택한 사람의 원래 인식 좌표를 표시합니다.'),
+                value: _corrected,
+                onChanged: (v) => setState(() => _corrected = v),
+              ),
+              Text(
+                '추적 성공 ${result.trackedCount}/${result.frames.length} 프레임 · '
+                '분석 간격 ${result.intervalMs}ms',
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                key: const Key('save-analysis'),
+                onPressed: state.saving || state.busy
+                    ? null
+                    : () => unawaited(_analysis.save(widget.info.source.name)),
+                icon: const Icon(Icons.save_outlined),
+                label: Text(state.saving ? '저장 중…' : '분석 결과 저장'),
+              ),
+              if (state.savedPath != null)
+                const Text('분석 결과를 앱 내부에 저장했습니다. 원본은 변경하지 않았습니다.'),
+            ],
+          ],
+          if (_comparisons.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            Text(
+              '이번 파일의 모델별 결과',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            for (final entry in _comparisons.entries)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('${entry.key.label}\n${entry.value}'),
+              ),
+            const Text('감지율은 관절 정확도를 뜻하지 않습니다. 같은 분석 간격으로 비교해주세요.'),
+          ],
+          const SizedBox(height: 16),
+          Text(
+            '현재는 10분 이하의 영상과 사진을 분석합니다. 크롭과 영상 내보내기는 다음 단계에서 제공됩니다.',
+            style: TextStyle(color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
     return Scaffold(
       appBar: AppBar(title: const Text('클라이머 분석')),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    widget.info.source.name,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 16),
-                  _preview(result, frame, target, state.busy || state.saving),
-                  if (_player?.value.isInitialized == true) ...[
-                    Row(
-                      children: [
-                        IconButton.filledTonal(
-                          key: const Key('analysis-play'),
-                          onPressed:
-                              state.busy ||
-                                  _drawingRegion ||
-                                  _playerError != null
-                              ? null
-                              : () => unawaited(_toggle()),
-                          tooltip: _player!.value.isPlaying ? '일시정지' : '재생',
-                          icon: Icon(
-                            _player!.value.isPlaying
-                                ? Icons.pause
-                                : Icons.play_arrow,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          '${formatDuration(_player!.value.position)} / ${formatDuration(_player!.value.duration)}',
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      key: const Key('analysis-seek'),
-                      max: math.max(
-                        1,
-                        _player!.value.duration.inMilliseconds.toDouble(),
-                      ),
-                      value: position.toDouble().clamp(
-                        0,
-                        math.max(
-                          1,
-                          _player!.value.duration.inMilliseconds.toDouble(),
-                        ),
-                      ),
-                      onChanged: state.busy || _drawingRegion
-                          ? null
-                          : (v) => unawaited(_seek(v.round())),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  if (state.busy) ...[
-                    LinearProgressIndicator(
-                      value: state.total > 0
-                          ? state.completed / state.total
-                          : null,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(switch (state.phase) {
-                      AnalysisPhase.preparing => '모델과 영상을 준비하고 있습니다…',
-                      AnalysisPhase.cancelling => '분석을 취소하고 자원을 정리하고 있습니다…',
-                      AnalysisPhase.tracking => '선택한 클라이머의 움직임을 연결하고 있습니다…',
-                      _ => '${state.completed} / ${state.total} 프레임 분석 중',
-                    }),
-                    TextButton(
-                      onPressed: state.phase == AnalysisPhase.cancelling
-                          ? null
-                          : _analysis.cancel,
-                      child: const Text('분석 취소'),
-                    ),
-                  ],
-                  if (state.phase == AnalysisPhase.cancelled)
-                    const Text('분석을 취소했습니다. 다시 시작할 수 있습니다.'),
-                  if (state.error != null || _playerError != null)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      child: Text(
-                        state.error ?? _playerError!,
-                        style: TextStyle(color: scheme.error),
-                      ),
-                    ),
-                  if (state.engines.isEmpty)
-                    TextButton(
-                      onPressed: () => unawaited(_analysis.loadEngines()),
-                      child: const Text('분석 기능 다시 확인'),
-                    ),
-                  if (engine != null) ...[
-                    DropdownButtonFormField<PoseEngine>(
-                      initialValue: engine,
-                      decoration: const InputDecoration(labelText: '분석 모델'),
-                      items: state.engines
-                          .map(
-                            (e) => DropdownMenuItem(
-                              value: e,
-                              child: Text(e.label),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: state.busy || state.saving
-                          ? null
-                          : (e) {
-                              if (e != null) setState(() => _engine = e);
-                            },
-                    ),
-                    if (engine == PoseEngine.mlKitAccurate)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
-                        child: Text(
-                          'ML Kit는 한 번에 한 사람만 인식합니다. 여러 사람은 MediaPipe로 분석하거나, 놓친 사람의 영역을 추가 분석해주세요.',
-                        ),
-                      ),
-                    if (widget.info.source.type == MediaType.video) ...[
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<int>(
-                        initialValue: _fps,
-                        decoration: const InputDecoration(
-                          labelText: '초당 분석 프레임',
-                        ),
-                        items: [2, 5, 10]
-                            .map(
-                              (v) => DropdownMenuItem(
-                                value: v,
-                                child: Text('$v개'),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: state.busy || state.saving
-                            ? null
-                            : (v) {
-                                if (v != null) setState(() => _fps = v);
-                              },
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      key: const Key('run-analysis'),
-                      onPressed: state.busy || state.saving
-                          ? null
-                          : () => unawaited(_start(engine)),
-                      icon: const Icon(Icons.accessibility_new),
-                      label: Text(result == null ? '분석 시작' : '이 모델로 다시 분석'),
-                    ),
-                  ],
-                  if (result != null) ...[
-                    const SizedBox(height: 20),
-                    Text(
-                      result.tracked.isEmpty
-                          ? '추적할 클라이머를 선택해주세요.'
-                          : '사람 ${result.selectedPersonId ?? '?'}을 추적 대상으로 선택했습니다.',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text('시간을 이동한 뒤 화면의 사람 또는 아래 번호를 눌러 선택할 수 있습니다.'),
-                    const SizedBox(height: 8),
-                    if (frame!.bodies.any((b) => b.usable))
-                      Wrap(
-                        spacing: 8,
-                        children: [
-                          for (var i = 0; i < frame.bodies.length; i++)
-                            if (frame.bodies[i].usable)
-                              ActionChip(
-                                label: Text(
-                                  frame.personIdAt(i) == null
-                                      ? '구분 중'
-                                      : '사람 ${frame.personIdAt(i)}',
-                                ),
-                                backgroundColor:
-                                    frame.personIdAt(i) ==
-                                        result.selectedPersonId
-                                    ? scheme.primaryContainer
-                                    : null,
-                                onPressed:
-                                    state.saving ||
-                                        state.busy ||
-                                        _drawingRegion ||
-                                        frame.personIdAt(i) == null
-                                    ? null
-                                    : () {
-                                        unawaited(_pause());
-                                        unawaited(
-                                          _analysis.selectTarget(index, i),
-                                        );
-                                      },
-                              ),
-                        ],
-                      )
-                    else
-                      const Text('이 시점에는 사람을 감지하지 못했습니다. 다른 시점으로 이동해주세요.'),
-                    if (result.regions.isNotEmpty)
-                      Text(
-                        '추가 분석 영역 ${result.regions.length}개 · 원하는 사람 번호를 다시 선택해주세요.',
-                      ),
-                    const SizedBox(height: 12),
-                    if (!_drawingRegion)
-                      OutlinedButton.icon(
-                        key: const Key('add-person-region'),
-                        onPressed: state.busy || state.saving
-                            ? null
-                            : () async {
-                                await _pause();
-                                if (!mounted) return;
-                                setState(() {
-                                  _drawingRegion = true;
-                                  _regionRect = null;
-                                  _regionError = null;
-                                });
-                              },
-                        icon: const Icon(Icons.crop_free),
-                        label: const Text('놓친 사람 영역 추가 분석'),
-                      )
-                    else ...[
-                      const Text(
-                        '영상 위에서 드래그해 영역을 지정해주세요. 다른 사람은 제외하고, 클라이머의 몸 전체와 영상 중 이동 경로를 포함해주세요.',
-                      ),
-                      const Text(
-                        '지정한 고정 영역을 영상 전체에서 추가 분석합니다. 영역 밖으로 나가면 해당 사람을 감지하지 못할 수 있습니다.',
-                      ),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: FilledButton(
-                              key: const Key('confirm-person-region'),
-                              onPressed:
-                                  state.busy ||
-                                      state.saving ||
-                                      _regionRect == null
-                                  ? null
-                                  : () async {
-                                      try {
-                                        final rect = _regionRect!;
-                                        final region = PoseRegion(
-                                          rect.left,
-                                          rect.top,
-                                          rect.right,
-                                          rect.bottom,
-                                        );
-                                        setState(() {
-                                          _drawingRegion = false;
-                                          _regionError = null;
-                                        });
-                                        await _analysis.analyze(
-                                          widget.info,
-                                          result.engine,
-                                          _fps,
-                                          region: region,
-                                        );
-                                        if (mounted) {
-                                          setState(() => _regionRect = null);
-                                        }
-                                      } on FormatException catch (error) {
-                                        setState(
-                                          () => _regionError = error.message,
-                                        );
-                                      }
-                                    },
-                              child: const Text('이 영역 추가 분석'),
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: state.busy
-                                ? null
-                                : () => setState(() {
-                                    _drawingRegion = false;
-                                    _regionRect = null;
-                                    _regionError = null;
-                                  }),
-                            child: const Text('영역 지정 취소'),
-                          ),
-                        ],
-                      ),
-                    ],
-                    if (_regionError != null)
-                      Text(
-                        _regionError!,
-                        style: TextStyle(color: scheme.error),
-                      ),
-                    const Text(
-                      '번호는 위치와 움직임으로 연결합니다. 겹침에서는 구분을 보류하고 긴 가림 뒤에는 새 번호가 생길 수 있으니 대상을 확인해주세요.',
-                    ),
-                    if (tracked != null) ...[
-                      const SizedBox(height: 12),
-                      Text(switch (tracked.status) {
-                        TrackStatus.tracked => '대상 추적 중',
-                        TrackStatus.lost =>
-                          '대상을 놓쳤습니다. 몸통이 보이는 시점에서 다시 선택해주세요.',
-                        TrackStatus.ambiguous => '사람이 겹쳐 대상을 구분하기 어렵습니다.',
-                      }),
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('관절 튐 보정'),
-                        subtitle: const Text('끄면 선택한 사람의 원래 인식 좌표를 표시합니다.'),
-                        value: _corrected,
-                        onChanged: (v) => setState(() => _corrected = v),
-                      ),
-                      Text(
-                        '추적 성공 ${result.trackedCount}/${result.frames.length} 프레임 · '
-                        '분석 간격 ${result.intervalMs}ms',
-                      ),
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        key: const Key('save-analysis'),
-                        onPressed: state.saving || state.busy
-                            ? null
-                            : () => unawaited(
-                                _analysis.save(widget.info.source.name),
-                              ),
-                        icon: const Icon(Icons.save_outlined),
-                        label: Text(state.saving ? '저장 중…' : '분석 결과 저장'),
-                      ),
-                      if (state.savedPath != null)
-                        const Text('분석 결과를 앱 내부에 저장했습니다. 원본은 변경하지 않았습니다.'),
-                    ],
-                  ],
-                  if (_comparisons.isNotEmpty) ...[
-                    const SizedBox(height: 20),
-                    Text(
-                      '이번 파일의 모델별 결과',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    for (final entry in _comparisons.entries)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Text('${entry.key.label}\n${entry.value}'),
-                      ),
-                    const Text('감지율은 관절 정확도를 뜻하지 않습니다. 같은 분석 간격으로 비교해주세요.'),
-                  ],
-                  const SizedBox(height: 16),
-                  Text(
-                    '현재는 10분 이하의 영상과 사진을 분석합니다. 크롭과 영상 내보내기는 다음 단계에서 제공됩니다.',
-                    style: TextStyle(color: scheme.onSurfaceVariant),
-                  ),
-                ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final sideBySide = constraints.maxWidth >= 700;
+            final panelLimit = constraints.maxHeight * (sideBySide ? 1 : .72);
+            // 작은 화면에서도 선택 버튼과 재생바가 보이도록 영상 높이를 먼저 줄입니다.
+            // 큰 글씨 등으로 공간이 부족하면 영상 패널 안에서만 스크롤할 수 있습니다.
+            final overhead = result == null
+                ? 100.0
+                : _drawingRegion
+                ? 270.0
+                : 180.0;
+            final previewHeight = (panelLimit - overhead).clamp(64.0, 440.0);
+            final panel = SingleChildScrollView(
+              key: const Key('analysis-media-panel'),
+              child: _mediaPanel(
+                state,
+                result,
+                frame,
+                target,
+                position,
+                previewHeight,
               ),
-            ),
-          ),
+            );
+            if (sideBySide) {
+              return Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1200),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(flex: 3, child: panel),
+                      const VerticalDivider(width: 1),
+                      Expanded(flex: 2, child: settings),
+                    ],
+                  ),
+                ),
+              );
+            }
+            return Column(
+              children: [
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: panelLimit),
+                  child: panel,
+                ),
+                const Divider(height: 1),
+                Expanded(child: settings),
+              ],
+            );
+          },
         ),
       ),
     );
+  }
+
+  Widget _mediaPanel(
+    AnalysisState state,
+    AnalysisResult? result,
+    PoseFrame? frame,
+    PoseBody? target,
+    int position,
+    double previewHeight,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final disabled = state.busy || state.saving;
+    // 모델의 반환 순서가 바뀌어도 같은 번호 버튼이 같은 자리에 있게 합니다.
+    final candidates = frame == null
+        ? <int>[]
+        : [
+            for (var i = 0; i < frame.bodies.length; i++)
+              if (frame.bodies[i].usable) i,
+          ];
+    candidates.sort(
+      (a, b) => (frame!.personIdAt(a) ?? 0x7fffffff).compareTo(
+        frame.personIdAt(b) ?? 0x7fffffff,
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            widget.info.source.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 8),
+          _preview(result, frame, target, disabled, previewHeight),
+          if (result != null && frame != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              result.selectedPersonId == null
+                  ? '추적할 사람 선택'
+                  : '추적 대상: 사람 ${result.selectedPersonId}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            Row(
+              children: [
+                // 후보가 많아도 줄이 늘어나 영상을 가리지 않도록 가로로 넘깁니다.
+                Expanded(
+                  child: SingleChildScrollView(
+                    key: const Key('person-selector'),
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        if (!frame.bodies.any((b) => b.usable))
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Text('이 시점에는 감지된 사람이 없습니다.'),
+                          ),
+                        for (final i in candidates)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ActionChip(
+                              avatar:
+                                  frame.personIdAt(i) != null &&
+                                      frame.personIdAt(i) ==
+                                          result.selectedPersonId
+                                  ? const Icon(Icons.check, size: 18)
+                                  : null,
+                              label: Text(
+                                frame.personIdAt(i) == null
+                                    ? '구분 중'
+                                    : '사람 ${frame.personIdAt(i)}',
+                              ),
+                              backgroundColor:
+                                  frame.personIdAt(i) != null &&
+                                      frame.personIdAt(i) ==
+                                          result.selectedPersonId
+                                  ? scheme.primaryContainer
+                                  : null,
+                              onPressed:
+                                  disabled ||
+                                      _drawingRegion ||
+                                      frame.personIdAt(i) == null
+                                  ? null
+                                  : () {
+                                      unawaited(_pause());
+                                      unawaited(
+                                        _analysis.selectTarget(
+                                          result.indexAt(position),
+                                          i,
+                                        ),
+                                      );
+                                    },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (!_drawingRegion)
+                  IconButton.outlined(
+                    key: const Key('add-person-region'),
+                    tooltip: '놓친 사람 영역 추가 분석',
+                    onPressed: disabled
+                        ? null
+                        : () async {
+                            await _pause();
+                            if (!mounted) return;
+                            setState(() {
+                              _drawingRegion = true;
+                              _regionRect = null;
+                              _regionError = null;
+                            });
+                          },
+                    icon: const Icon(Icons.person_add_alt_1),
+                  ),
+              ],
+            ),
+            if (_drawingRegion) ...[
+              Text(
+                '영상에서 드래그해 몸과 이동 경로를 포함해주세요.',
+                maxLines: 2,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('confirm-person-region'),
+                      onPressed: disabled || _regionRect == null
+                          ? null
+                          : () => unawaited(_confirmRegion(result)),
+                      child: const Text('이 영역 추가 분석'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: disabled
+                        ? null
+                        : () => setState(() {
+                            _drawingRegion = false;
+                            _regionRect = null;
+                            _regionError = null;
+                          }),
+                    child: const Text('취소'),
+                  ),
+                ],
+              ),
+            ],
+            if (_regionError != null)
+              Text(_regionError!, style: TextStyle(color: scheme.error)),
+          ],
+          if (_player?.value.isInitialized == true)
+            Row(
+              children: [
+                IconButton.filledTonal(
+                  key: const Key('analysis-play'),
+                  onPressed:
+                      state.busy || _drawingRegion || _playerError != null
+                      ? null
+                      : () => unawaited(_toggle()),
+                  tooltip: _player!.value.isPlaying ? '일시정지' : '재생',
+                  icon: Icon(
+                    _player!.value.isPlaying ? Icons.pause : Icons.play_arrow,
+                  ),
+                ),
+                Expanded(
+                  child: Slider(
+                    key: const Key('analysis-seek'),
+                    max: math.max(
+                      1,
+                      _player!.value.duration.inMilliseconds.toDouble(),
+                    ),
+                    value: position.toDouble().clamp(
+                      0,
+                      math.max(
+                        1,
+                        _player!.value.duration.inMilliseconds.toDouble(),
+                      ),
+                    ),
+                    onChanged: state.busy || _drawingRegion
+                        ? null
+                        : (v) => unawaited(_seek(v.round())),
+                  ),
+                ),
+                Text(
+                  '${formatDuration(_player!.value.position)} / ${formatDuration(_player!.value.duration)}',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmRegion(AnalysisResult result) async {
+    try {
+      final rect = _regionRect!;
+      final region = PoseRegion(rect.left, rect.top, rect.right, rect.bottom);
+      setState(() {
+        _drawingRegion = false;
+        _regionError = null;
+      });
+      await _analysis.analyze(widget.info, result.engine, _fps, region: region);
+      if (mounted) setState(() => _regionRect = null);
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _regionError = error.message);
+    }
   }
 
   Widget _preview(
@@ -523,6 +589,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
     PoseFrame? frame,
     PoseBody? target,
     bool disabled,
+    double maxPreviewHeight,
   ) {
     final scheme = Theme.of(context).colorScheme;
     final ratio = result == null
@@ -530,7 +597,10 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
         : result.session.width / result.session.height;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final height = (constraints.maxWidth / ratio).clamp(200.0, 440.0);
+        final height = (constraints.maxWidth / ratio).clamp(
+          64.0,
+          maxPreviewHeight,
+        );
         final width = math.min(constraints.maxWidth, height * ratio);
         final displayHeight = width / ratio;
         return Container(
