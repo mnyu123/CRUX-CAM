@@ -227,6 +227,72 @@ void main() {
         }
       });
     }
+    if (!uiOnly) {
+      testWidgets('지정 영역의 실제 모델 좌표를 원본 화면으로 돌려주고 여러 후보를 합친다', (tester) async {
+        final file = File(climbingPath);
+        final source = MediaSource(
+          path: file.path,
+          name: 'climbing_sample.mp4',
+          sizeBytes: await file.length(),
+          type: MediaType.video,
+        );
+        final engines = await service.engines();
+        final reports = <Map<String, dynamic>>[];
+        for (final engine in engines) {
+          final baselineId = newId();
+          final baseline = await service.open(baselineId, source, engine);
+          await service.close(baselineId);
+          for (final region in [
+            PoseRegion(0, 0, .65, 1),
+            PoseRegion(.35, 0, 1, 1),
+          ]) {
+            final id = newId();
+            try {
+              final session = await service.open(
+                id,
+                source,
+                engine,
+                region: region,
+              );
+              expect(
+                session.width / session.height,
+                closeTo(baseline.width / baseline.height, .01),
+              );
+              for (final time in [3000, 6000, 12000]) {
+                final frame = await service.frame(id, time, preview: true);
+                expect(frame.preview, isNotEmpty);
+                final codec = await ui.instantiateImageCodec(frame.preview!);
+                final decoded = await codec.getNextFrame();
+                expect(decoded.image.width, session.width);
+                expect(decoded.image.height, session.height);
+                decoded.image.dispose();
+                codec.dispose();
+                for (final body in frame.bodies.where((b) => b.usable)) {
+                  expect(
+                    body.center.x,
+                    inInclusiveRange(region.left - .05, region.right + .05),
+                  );
+                  expect(body.center.y, inInclusiveRange(-.05, 1.05));
+                }
+                reports.add({
+                  'engine': engine.id,
+                  'region': region.toJson(),
+                  'timeMs': time,
+                  'centers': frame.bodies
+                      .where((b) => b.usable)
+                      .map((b) => [b.center.x, b.center.y])
+                      .toList(),
+                });
+              }
+            } finally {
+              await service.close(id);
+            }
+          }
+        }
+        expect(reports.any((r) => (r['centers'] as List).isNotEmpty), isTrue);
+        debugPrint('CRUX_REGION_CHECK=${jsonEncode(reports)}');
+      });
+    }
     testWidgets('실제 영상 위 관절 표시와 대상 선택 화면', (tester) async {
       final file = File(climbingPath);
       final source = MediaSource(
@@ -274,9 +340,35 @@ void main() {
           final state = container.read(analysisControllerProvider);
           if (!state.busy) break;
         }
+        final initial = container.read(analysisControllerProvider);
+        expect(initial.error, isNull);
+        expect(initial.result, isNotNull);
+        await container
+            .read(analysisControllerProvider.notifier)
+            .analyze(
+              MediaInfo(source: source, width: 720, height: 1280),
+              PoseEngine.mediaPipeFull,
+              5,
+              region: PoseRegion(0, 0, .65, 1),
+            );
         final state = container.read(analysisControllerProvider);
         expect(state.error, isNull);
-        expect(state.result, isNotNull);
+        expect(
+          state.result!.frames.any(
+            (f) => f.personIds.whereType<int>().length >= 2,
+          ),
+          isTrue,
+        );
+        debugPrint(
+          'CRUX_MULTIPLE_PEOPLE=${jsonEncode([
+            for (final f in state.result!.frames)
+              if (f.personIds.whereType<int>().length >= 2) {
+                  'timeMs': f.timeMs,
+                  'ids': f.personIds,
+                  'centers': f.bodies.map((b) => [b.center.x, b.center.y]).toList(),
+                },
+          ])}',
+        );
         final player = tester
             .widget<VideoPlayer>(find.byType(VideoPlayer).last)
             .controller;
@@ -291,8 +383,12 @@ void main() {
           Duration(milliseconds: result.frames[anchor].timeMs),
         );
         await tester.pumpAndSettle();
-        await tester.ensureVisible(find.text('사람 ${candidate + 1}'));
-        await tester.tap(find.text('사람 ${candidate + 1}'));
+        await tester.ensureVisible(
+          find.text('사람 ${result.frames[anchor].personIdAt(candidate)}'),
+        );
+        await tester.tap(
+          find.text('사람 ${result.frames[anchor].personIdAt(candidate)}'),
+        );
         for (
           var i = 0;
           i < 300 && container.read(analysisControllerProvider).busy;
@@ -305,7 +401,12 @@ void main() {
           container.read(analysisControllerProvider).result!.tracked,
           isNotEmpty,
         );
-        await player.seekTo(const Duration(seconds: 12));
+        final multiple = result.frames.indexWhere(
+          (f) => f.personIds.whereType<int>().length >= 2,
+        );
+        await player.seekTo(
+          Duration(milliseconds: result.frames[multiple].timeMs),
+        );
         await tester.pumpAndSettle();
         await tester.ensureVisible(find.byKey(const Key('pose-preview')));
         await tester.pumpAndSettle();

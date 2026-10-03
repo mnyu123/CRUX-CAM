@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/pose/analysis_store.dart';
 import '../../../core/pose/pose_service.dart';
 import '../../../core/tracking/subject_tracker.dart';
+import '../../../core/tracking/person_catalog.dart';
 import '../../media/models/media_info.dart';
 import '../models/pose_models.dart';
 
@@ -90,8 +91,16 @@ class AnalysisController extends Notifier<AnalysisState> {
     }
   }
 
-  Future<void> analyze(MediaInfo info, PoseEngine engine, int fps) async {
+  Future<void> analyze(
+    MediaInfo info,
+    PoseEngine engine,
+    int fps, {
+    PoseRegion? region,
+  }) async {
     if (state.busy || state.saving || !state.engines.contains(engine)) return;
+    final previous = region == null ? null : state.result;
+    if (region != null && previous == null) return;
+    if (previous != null) engine = previous.engine;
     final service = ref.read(poseServiceProvider);
     final engines = state.engines;
     final generation = ++_generation;
@@ -100,12 +109,16 @@ class AnalysisController extends Notifier<AnalysisState> {
     _cancelled = false;
     final timer = Stopwatch()..start();
     bool active() => ref.mounted && generation == _generation;
-    state = AnalysisState(phase: AnalysisPhase.preparing, engines: engines);
+    state = AnalysisState(
+      phase: AnalysisPhase.preparing,
+      engines: engines,
+      result: previous,
+    );
     AnalysisResult? result;
     Object? failure;
     try {
       final session = await service
-          .open(id, info.source, engine)
+          .open(id, info.source, engine, region: region)
           .timeout(const Duration(seconds: 60));
       if (!active() || _cancelled) return;
       if (session.width <= 0 ||
@@ -118,10 +131,12 @@ class AnalysisController extends Notifier<AnalysisState> {
       }
       // 분석 결과가 무한히 늘지 않도록 6,000개 이하로 제한합니다.
       // 설정값보다 간격이 늘어난 경우 실제 간격을 결과 화면과 저장 파일에 남깁니다.
-      final interval = math.max(
-        (1000 / fps.clamp(1, 10)).round(),
-        (session.durationMs / 6000).ceil(),
-      );
+      final interval =
+          previous?.intervalMs ??
+          math.max(
+            (1000 / fps.clamp(1, 10)).round(),
+            (session.durationMs / 6000).ceil(),
+          );
       final total = info.source.type == MediaType.image
           ? 1
           : (session.durationMs / interval).ceil();
@@ -133,6 +148,7 @@ class AnalysisController extends Notifier<AnalysisState> {
           engines: engines,
           completed: i,
           total: total,
+          result: previous,
         );
         final frame = await service
             .frame(
@@ -147,12 +163,24 @@ class AnalysisController extends Notifier<AnalysisState> {
         }
         frames.add(frame);
       }
+      if (previous != null &&
+          !frames.any((f) => f.bodies.any((b) => b.usable))) {
+        throw const FormatException(
+          '지정한 영역에서 사람을 감지하지 못했습니다. 영역을 넓히거나 다른 모델로 전체 분석해주세요.',
+        );
+      }
+      final catalogued = await compute(_catalogFrames, (
+        previous?.frames,
+        frames,
+      ));
+      if (!active() || _cancelled) return;
       result = AnalysisResult(
         session: session,
         engine: engine,
         intervalMs: interval,
-        frames: List.unmodifiable(frames),
-        elapsedMs: timer.elapsedMilliseconds,
+        frames: catalogued,
+        regions: [...?previous?.regions, ?region],
+        elapsedMs: (previous?.elapsedMs ?? 0) + timer.elapsedMilliseconds,
       );
     } catch (error) {
       failure = error;
@@ -169,12 +197,14 @@ class AnalysisController extends Notifier<AnalysisState> {
           state = AnalysisState(
             phase: AnalysisPhase.cancelled,
             engines: engines,
+            result: previous,
           );
         } else if (failure != null) {
           state = AnalysisState(
             phase: AnalysisPhase.failed,
             engines: engines,
             error: _message(failure),
+            result: previous,
           );
         } else if (result != null) {
           state = AnalysisState(
@@ -197,6 +227,7 @@ class AnalysisController extends Notifier<AnalysisState> {
       engines: state.engines,
       completed: state.completed,
       total: state.total,
+      result: state.result,
     );
     final id = _sessionId;
     // OS에 즉시 취소 신호를 보내고, 실제 해제가 끝날 때까지 재시작을 막습니다.
@@ -221,10 +252,29 @@ class AnalysisController extends Notifier<AnalysisState> {
     try {
       final frame = result.frames[frameIndex];
       // 긴 영상의 대상 선택도 화면을 멈추지 않도록 좌표 계산을 별도로 실행합니다.
+      final personId = frame.personIdAt(bodyIndex);
+      if (frame.personIds.isNotEmpty && personId == null) {
+        throw const FormatException('사람 번호를 구분할 수 있는 시점으로 이동해 선택해주세요.');
+      }
+      // 번호가 있는 결과에서는 다른 번호의 사람을 추적 후보에서 제외합니다.
+      final frames = personId == null
+          ? result.frames
+          : result.frames
+                .map(
+                  (f) => PoseFrame(
+                    timeMs: f.timeMs,
+                    inferenceMs: f.inferenceMs,
+                    bodies: [
+                      for (var i = 0; i < f.bodies.length; i++)
+                        if (f.personIdAt(i) == personId) f.bodies[i],
+                    ],
+                  ),
+                )
+                .toList();
       final tracked = await compute(_trackFrames, (
-        result.frames,
+        frames,
         frameIndex,
-        bodyIndex,
+        personId == null ? bodyIndex : 0,
       ));
       if (!ref.mounted || generation != _generation) return;
       state = AnalysisState(
@@ -247,7 +297,10 @@ class AnalysisController extends Notifier<AnalysisState> {
 
   Future<void> save(String sourceName) async {
     final result = state.result;
-    if (result == null || result.tracked.isEmpty || state.saving || state.busy) {
+    if (result == null ||
+        result.tracked.isEmpty ||
+        state.saving ||
+        state.busy) {
       return;
     }
     final generation = _generation;
@@ -294,3 +347,8 @@ class AnalysisController extends Notifier<AnalysisState> {
 
 List<TrackedFrame> _trackFrames((List<PoseFrame>, int, int) input) =>
     SubjectTracker().track(input.$1, input.$2, input.$3);
+
+List<PoseFrame> _catalogFrames((List<PoseFrame>?, List<PoseFrame>) input) =>
+    input.$1 == null
+    ? PersonCatalog().assign(input.$2)
+    : PersonCatalog().merge(input.$1!, input.$2);

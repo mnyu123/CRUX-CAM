@@ -8,7 +8,12 @@ final poseServiceProvider = Provider<PoseService>((ref) => NativePoseService());
 
 abstract class PoseService {
   Future<List<PoseEngine>> engines();
-  Future<PoseSession> open(String id, MediaSource source, PoseEngine engine);
+  Future<PoseSession> open(
+    String id,
+    MediaSource source,
+    PoseEngine engine, {
+    PoseRegion? region,
+  });
   Future<PoseFrame> frame(String id, int timeMs, {bool preview = false});
   Future<void> close(String id);
 }
@@ -30,13 +35,15 @@ class NativePoseService implements PoseService {
   Future<PoseSession> open(
     String id,
     MediaSource source,
-    PoseEngine engine,
-  ) async {
+    PoseEngine engine, {
+    PoseRegion? region,
+  }) async {
     final data = await channel.invokeMapMethod<String, dynamic>('open', {
       'id': id,
       'path': source.path,
       'type': source.type.name,
       'engine': engine.id,
+      if (region != null) 'region': region.toJson(),
     });
     if (data == null) throw const FormatException('분석 준비 결과가 없습니다.');
     return PoseSession(

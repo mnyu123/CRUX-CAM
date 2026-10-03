@@ -55,7 +55,7 @@ void main() {
     final data = jsonDecode(
       await File(state.savedPath!).readAsString(),
     ) as Map<String, dynamic>;
-    expect(data['schemaVersion'], 1);
+    expect(data['schemaVersion'], 2);
     expect(data['coordinateSpace'], 'upright_normalized');
     expect(data['frames'], hasLength(5));
     expect((data['frames'] as List).first['target']['status'], 'tracked');
@@ -63,6 +63,57 @@ void main() {
       await directory.list().where((f) => f.path.endsWith('.partial')).length,
       0,
     );
+  });
+  test('영역 추가 분석 후 두 사람 중 두 번째 사람만 선택하고 번호를 저장한다', () async {
+    await controller.analyze(info, PoseEngine.mediaPipeFull, 5);
+    await controller.analyze(
+      info,
+      PoseEngine.mediaPipeFull,
+      2,
+      region: PoseRegion(.5, 0, 1, 1),
+    );
+    final result = container.read(analysisControllerProvider).result!;
+    expect(result.intervalMs, 200);
+    expect(result.frames.first.personIds, [1, 2]);
+    expect(result.regions, hasLength(1));
+    await controller.selectTarget(0, 1);
+    await controller.save(info.source.name);
+    final selected = container.read(analysisControllerProvider);
+    expect(selected.result!.selectedPersonId, 2);
+    expect(selected.result!.trackedCount, 5);
+    expect(selected.result!.tracked.every((f) => f.raw!.center.x > .6), isTrue);
+    final data = jsonDecode(await File(selected.savedPath!).readAsString());
+    expect(data['selectedPersonId'], 2);
+    expect(data['frames'][0]['personIds'], [1, 2]);
+    expect(data['analysisRegions'], [
+      [.5, 0, 1.0, 1.0],
+    ]);
+  });
+  test('영역 추가 분석 취소와 준비 실패는 기존 선택과 분석을 보존한다', () async {
+    await controller.analyze(info, PoseEngine.mediaPipeFull, 5);
+    await controller.selectTarget(0, 0);
+    final original = container.read(analysisControllerProvider).result!;
+    service.pendingFrame = Completer<PoseFrame>();
+    final job = controller.analyze(
+      info,
+      PoseEngine.mediaPipeFull,
+      5,
+      region: PoseRegion(.5, 0, 1, 1),
+    );
+    await Future<void>.delayed(Duration.zero);
+    controller.cancel();
+    service.pendingFrame!.complete(poseFrame(0, [bodyAt(.7)]));
+    await job;
+    expect(container.read(analysisControllerProvider).result, same(original));
+    service.pendingFrame = null;
+    service.openError = PlatformException(code: 'test', message: '영역 분석 실패');
+    await controller.analyze(
+      info,
+      PoseEngine.mediaPipeFull,
+      5,
+      region: PoseRegion(.5, 0, 1, 1),
+    );
+    expect(container.read(analysisControllerProvider).result, same(original));
   });
   test('분석 도중 취소하면 늦게 도착한 결과를 버리고 다시 시작할 수 있다', () async {
     service.pendingFrame = Completer<PoseFrame>();

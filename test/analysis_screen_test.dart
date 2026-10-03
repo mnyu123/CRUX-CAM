@@ -43,6 +43,16 @@ void main() {
       expect(find.text('클라이머 분석'), findsOneWidget);
       await tester.ensureVisible(find.byKey(const Key('run-analysis')));
       await tester.tap(find.byKey(const Key('run-analysis')));
+      await tester.pump();
+      await tester.runAsync(() async {
+        for (
+          var i = 0;
+          i < 100 && container.read(analysisControllerProvider).busy;
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
       await tester.pumpAndSettle();
       expect(
         container.read(analysisControllerProvider).result!.frames,
@@ -50,6 +60,7 @@ void main() {
       );
       await tester.ensureVisible(find.text('사람 1'));
       await tester.tap(find.text('사람 1'));
+      await tester.pump();
       await tester.runAsync(() async {
         for (
           var i = 0;
@@ -62,6 +73,53 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('대상 추적 중'), findsOneWidget);
       expect(find.byKey(const Key('save-analysis')), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('add-person-region')));
+      await tester.tap(find.byKey(const Key('add-person-region')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pose-preview')));
+      final preview = tester.getRect(find.byKey(const Key('pose-preview')));
+      final gesture = await tester.startGesture(
+        preview.topLeft + Offset(preview.width * .5, preview.height * .05),
+      );
+      await gesture.moveBy(Offset(preview.width * .08, preview.height * .08));
+      await gesture.moveBy(Offset(preview.width * .37, preview.height * .82));
+      await gesture.up();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.byKey(const Key('confirm-person-region')),
+      );
+      await tester.tap(find.byKey(const Key('confirm-person-region')));
+      await tester.pump();
+      await tester.runAsync(() async {
+        for (
+          var i = 0;
+          i < 100 && container.read(analysisControllerProvider).busy;
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
+      await tester.pumpAndSettle();
+      expect(pose.region, isNotNull);
+      expect(find.text('사람 1'), findsOneWidget);
+      expect(find.text('사람 2'), findsOneWidget);
+      await tester.ensureVisible(find.text('사람 2'));
+      await tester.tap(find.text('사람 2'));
+      await tester.pump();
+      await tester.runAsync(() async {
+        for (
+          var i = 0;
+          i < 100 && container.read(analysisControllerProvider).busy;
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
+      await tester.pumpAndSettle();
+      expect(
+        container.read(analysisControllerProvider).result!.selectedPersonId,
+        2,
+      );
       Navigator.of(tester.element(find.text('클라이머 분석'))).pop();
       await tester.pumpAndSettle();
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));

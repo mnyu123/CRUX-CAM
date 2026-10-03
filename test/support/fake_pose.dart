@@ -28,6 +28,7 @@ class FakePoseService implements PoseService {
   Object? openError;
   Completer<PoseFrame>? pendingFrame;
   int calls = 0;
+  PoseRegion? region;
   @override
   Future<List<PoseEngine>> engines() async => [
     PoseEngine.mediaPipeFull,
@@ -37,8 +38,10 @@ class FakePoseService implements PoseService {
   Future<PoseSession> open(
     String id,
     MediaSource source,
-    PoseEngine engine,
-  ) async {
+    PoseEngine engine, {
+    PoseRegion? region,
+  }) async {
+    this.region = region;
     if (openError != null) throw openError!;
     return PoseSession(
       id: id,
@@ -53,7 +56,9 @@ class FakePoseService implements PoseService {
   Future<PoseFrame> frame(String id, int timeMs, {bool preview = false}) async {
     calls++;
     if (pendingFrame != null) return pendingFrame!.future;
-    return poseFrame(timeMs, [bodyAt(0.3 + timeMs * 0.0001)]);
+    return poseFrame(timeMs, [
+      bodyAt((region == null ? 0.3 : 0.7) + timeMs * 0.0001),
+    ]);
   }
 
   @override

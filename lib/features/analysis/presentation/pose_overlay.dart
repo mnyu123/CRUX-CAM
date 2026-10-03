@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'dart:math' as math;
 
 import '../models/pose_models.dart';
@@ -27,8 +28,10 @@ class PoseOverlay extends CustomPainter {
     required this.bodies,
     required this.target,
     this.showCandidates = true,
+    this.personIds = const [],
   });
   final List<PoseBody> bodies;
+  final List<int?> personIds;
   final PoseBody? target;
   final bool showCandidates;
 
@@ -54,7 +57,7 @@ class PoseOverlay extends CustomPainter {
         );
         final label = TextPainter(
           text: TextSpan(
-            text: '${i + 1}',
+            text: '${i < personIds.length ? personIds[i] ?? '?' : i + 1}',
             style: const TextStyle(
               color: Colors.black,
               fontSize: 14,
@@ -65,7 +68,7 @@ class PoseOverlay extends CustomPainter {
         )..layout();
         final offset = Offset(
           rect.left.clamp(0, math.max(0, size.width - 20)),
-          rect.top.clamp(0, math.max(0, size.height - 22)),
+          (rect.top - 24).clamp(0, math.max(0, size.height - 22)),
         );
         canvas.drawRect(
           offset & const Size(20, 22),
@@ -94,6 +97,7 @@ class PoseOverlay extends CustomPainter {
   @override
   bool shouldRepaint(covariant PoseOverlay oldDelegate) =>
       bodies != oldDelegate.bodies ||
+      personIds != oldDelegate.personIds ||
       target != oldDelegate.target ||
       showCandidates != oldDelegate.showCandidates;
 }

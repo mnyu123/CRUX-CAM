@@ -11,6 +11,19 @@ enum PoseEngine {
   final String label;
 }
 
+/// 원본 전체 화면 기준의 분석 영역입니다. 실제 영상 크롭과는 별개입니다.
+class PoseRegion {
+  PoseRegion(this.left, this.top, this.right, this.bottom) {
+    if ([left, top, right, bottom].any((v) => !v.isFinite || v < 0 || v > 1) ||
+        right - left < .05 ||
+        bottom - top < .05) {
+      throw const FormatException('사람의 몸이 포함되도록 조금 더 넓게 영역을 지정해주세요.');
+    }
+  }
+  final double left, top, right, bottom;
+  List<double> toJson() => [left, top, right, bottom];
+}
+
 class PosePoint {
   const PosePoint(this.x, this.y, this.z, this.confidence);
   final double x;
@@ -96,11 +109,15 @@ class PoseFrame {
     required this.bodies,
     required this.inferenceMs,
     this.preview,
+    this.personIds = const [],
   });
   final int timeMs;
   final List<PoseBody> bodies;
   final double inferenceMs;
   final Uint8List? preview;
+  final List<int?> personIds;
+  int? personIdAt(int index) =>
+      index < personIds.length ? personIds[index] : null;
   factory PoseFrame.fromMap(Map<dynamic, dynamic> data) => PoseFrame(
     timeMs: (data['timeMs'] as num).toInt(),
     bodies: List.unmodifiable(
@@ -159,6 +176,8 @@ class AnalysisResult {
     this.tracked = const [],
     this.anchorMs,
     this.anchorIndex,
+    this.selectedPersonId,
+    this.regions = const [],
   });
   final PoseSession session;
   final PoseEngine engine;
@@ -168,6 +187,8 @@ class AnalysisResult {
   final int elapsedMs;
   final int? anchorMs;
   final int? anchorIndex;
+  final int? selectedPersonId;
+  final List<PoseRegion> regions;
   double get meanInferenceMs => frames.isEmpty
       ? 0
       : frames.fold<double>(0, (v, f) => v + f.inferenceMs) / frames.length;
@@ -186,6 +207,8 @@ class AnalysisResult {
         tracked: value,
         anchorMs: time,
         anchorIndex: index,
+        selectedPersonId: frames[indexAt(time)].personIdAt(index),
+        regions: regions,
       );
 
   int indexAt(int timeMs) {
@@ -209,7 +232,7 @@ class AnalysisResult {
   }
 
   Map<String, dynamic> toJson(String fileName) => {
-    'schemaVersion': 1,
+    'schemaVersion': 2,
     'sourceName': fileName,
     'engine': engine.id,
     'width': session.width,
@@ -221,12 +244,15 @@ class AnalysisResult {
     'meanInferenceMs': meanInferenceMs,
     'anchorMs': anchorMs,
     'anchorIndex': anchorIndex,
+    'selectedPersonId': selectedPersonId,
+    'analysisRegions': regions.map((r) => r.toJson()).toList(),
     'frames': [
       for (var i = 0; i < frames.length; i++)
         {
           'timeMs': frames[i].timeMs,
           'inferenceMs': frames[i].inferenceMs,
           'candidates': frames[i].bodies.map((p) => p.toJson()).toList(),
+          'personIds': frames[i].personIds,
           if (tracked.isNotEmpty) 'target': tracked[i].toJson(),
         },
     ],

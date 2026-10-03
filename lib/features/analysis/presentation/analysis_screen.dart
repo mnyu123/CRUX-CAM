@@ -28,6 +28,10 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
   int _fps = 5;
   bool _corrected = true;
   bool _playbackBusy = false;
+  bool _drawingRegion = false;
+  Offset? _regionStart;
+  Rect? _regionRect;
+  String? _regionError;
   String? _playerError;
   final Map<PoseEngine, String> _comparisons = {};
 
@@ -130,6 +134,11 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
   Future<void> _start(PoseEngine engine) async {
     await _pause();
     if (!mounted) return;
+    setState(() {
+      _drawingRegion = false;
+      _regionRect = null;
+      _regionError = null;
+    });
     await _analysis.analyze(widget.info, engine, _fps);
     if (!mounted) return;
     final result = ref.read(analysisControllerProvider).result;
@@ -181,7 +190,10 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                       children: [
                         IconButton.filledTonal(
                           key: const Key('analysis-play'),
-                          onPressed: state.busy || _playerError != null
+                          onPressed:
+                              state.busy ||
+                                  _drawingRegion ||
+                                  _playerError != null
                               ? null
                               : () => unawaited(_toggle()),
                           tooltip: _player!.value.isPlaying ? '일시정지' : '재생',
@@ -210,7 +222,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                           _player!.value.duration.inMilliseconds.toDouble(),
                         ),
                       ),
-                      onChanged: state.busy
+                      onChanged: state.busy || _drawingRegion
                           ? null
                           : (v) => unawaited(_seek(v.round())),
                     ),
@@ -269,6 +281,13 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                               if (e != null) setState(() => _engine = e);
                             },
                     ),
+                    if (engine == PoseEngine.mlKitAccurate)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Text(
+                          'ML Kit는 한 번에 한 사람만 인식합니다. 여러 사람은 MediaPipe로 분석하거나, 놓친 사람의 영역을 추가 분석해주세요.',
+                        ),
+                      ),
                     if (widget.info.source.type == MediaType.video) ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<int>(
@@ -306,7 +325,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                     Text(
                       result.tracked.isEmpty
                           ? '추적할 클라이머를 선택해주세요.'
-                          : '추적 대상이 선택되었습니다.',
+                          : '사람 ${result.selectedPersonId ?? '?'}을 추적 대상으로 선택했습니다.',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 8),
@@ -319,8 +338,21 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                           for (var i = 0; i < frame.bodies.length; i++)
                             if (frame.bodies[i].usable)
                               ActionChip(
-                                label: Text('사람 ${i + 1}'),
-                                onPressed: state.saving || state.busy
+                                label: Text(
+                                  frame.personIdAt(i) == null
+                                      ? '구분 중'
+                                      : '사람 ${frame.personIdAt(i)}',
+                                ),
+                                backgroundColor:
+                                    frame.personIdAt(i) ==
+                                        result.selectedPersonId
+                                    ? scheme.primaryContainer
+                                    : null,
+                                onPressed:
+                                    state.saving ||
+                                        state.busy ||
+                                        _drawingRegion ||
+                                        frame.personIdAt(i) == null
                                     ? null
                                     : () {
                                         unawaited(_pause());
@@ -333,6 +365,97 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                       )
                     else
                       const Text('이 시점에는 사람을 감지하지 못했습니다. 다른 시점으로 이동해주세요.'),
+                    if (result.regions.isNotEmpty)
+                      Text(
+                        '추가 분석 영역 ${result.regions.length}개 · 원하는 사람 번호를 다시 선택해주세요.',
+                      ),
+                    const SizedBox(height: 12),
+                    if (!_drawingRegion)
+                      OutlinedButton.icon(
+                        key: const Key('add-person-region'),
+                        onPressed: state.busy || state.saving
+                            ? null
+                            : () async {
+                                await _pause();
+                                if (!mounted) return;
+                                setState(() {
+                                  _drawingRegion = true;
+                                  _regionRect = null;
+                                  _regionError = null;
+                                });
+                              },
+                        icon: const Icon(Icons.crop_free),
+                        label: const Text('놓친 사람 영역 추가 분석'),
+                      )
+                    else ...[
+                      const Text(
+                        '영상 위에서 드래그해 영역을 지정해주세요. 다른 사람은 제외하고, 클라이머의 몸 전체와 영상 중 이동 경로를 포함해주세요.',
+                      ),
+                      const Text(
+                        '지정한 고정 영역을 영상 전체에서 추가 분석합니다. 영역 밖으로 나가면 해당 사람을 감지하지 못할 수 있습니다.',
+                      ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton(
+                              key: const Key('confirm-person-region'),
+                              onPressed:
+                                  state.busy ||
+                                      state.saving ||
+                                      _regionRect == null
+                                  ? null
+                                  : () async {
+                                      try {
+                                        final rect = _regionRect!;
+                                        final region = PoseRegion(
+                                          rect.left,
+                                          rect.top,
+                                          rect.right,
+                                          rect.bottom,
+                                        );
+                                        setState(() {
+                                          _drawingRegion = false;
+                                          _regionError = null;
+                                        });
+                                        await _analysis.analyze(
+                                          widget.info,
+                                          result.engine,
+                                          _fps,
+                                          region: region,
+                                        );
+                                        if (mounted) {
+                                          setState(() => _regionRect = null);
+                                        }
+                                      } on FormatException catch (error) {
+                                        setState(
+                                          () => _regionError = error.message,
+                                        );
+                                      }
+                                    },
+                              child: const Text('이 영역 추가 분석'),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: state.busy
+                                ? null
+                                : () => setState(() {
+                                    _drawingRegion = false;
+                                    _regionRect = null;
+                                    _regionError = null;
+                                  }),
+                            child: const Text('영역 지정 취소'),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (_regionError != null)
+                      Text(
+                        _regionError!,
+                        style: TextStyle(color: scheme.error),
+                      ),
+                    const Text(
+                      '번호는 위치와 움직임으로 연결합니다. 겹침에서는 구분을 보류하고 긴 가림 뒤에는 새 번호가 생길 수 있으니 대상을 확인해주세요.',
+                    ),
                     if (tracked != null) ...[
                       const SizedBox(height: 12),
                       Text(switch (tracked.status) {
@@ -401,6 +524,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
     PoseBody? target,
     bool disabled,
   ) {
+    final scheme = Theme.of(context).colorScheme;
     final ratio = result == null
         ? widget.info.width / widget.info.height
         : result.session.width / result.session.height;
@@ -418,7 +542,30 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
             height: displayHeight,
             child: GestureDetector(
               key: const Key('pose-preview'),
-              onTapUp: disabled || frame == null || result == null
+              // 화면의 검은 여백을 빼고 실제 영상 표시 영역에서만 좌표를 계산합니다.
+              onPanStart: !_drawingRegion || disabled
+                  ? null
+                  : (details) {
+                      _regionStart = Offset(
+                        (details.localPosition.dx / width).clamp(0, 1),
+                        (details.localPosition.dy / displayHeight).clamp(0, 1),
+                      );
+                      setState(() => _regionRect = null);
+                    },
+              onPanUpdate: !_drawingRegion || disabled
+                  ? null
+                  : (details) {
+                      if (_regionStart == null) return;
+                      final end = Offset(
+                        (details.localPosition.dx / width).clamp(0, 1),
+                        (details.localPosition.dy / displayHeight).clamp(0, 1),
+                      );
+                      setState(
+                        () => _regionRect = Rect.fromPoints(_regionStart!, end),
+                      );
+                    },
+              onTapUp:
+                  disabled || _drawingRegion || frame == null || result == null
                   ? null
                   : (details) {
                       final x = details.localPosition.dx / width;
@@ -426,7 +573,9 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                       final choices = <({int index, double distance})>[];
                       for (var i = 0; i < frame.bodies.length; i++) {
                         final body = frame.bodies[i];
-                        if (!body.usable) continue;
+                        if (!body.usable || frame.personIdAt(i) == null) {
+                          continue;
+                        }
                         final b = body.bounds;
                         if (x < b.left - 0.03 ||
                             x > b.right + 0.03 ||
@@ -475,7 +624,27 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                         painter: PoseOverlay(
                           bodies: frame.bodies,
                           target: target,
-                          showCandidates: result!.tracked.isEmpty,
+                          personIds: frame.personIds,
+                        ),
+                      ),
+                    if (_regionRect != null)
+                      Positioned.fromRect(
+                        rect: Rect.fromLTRB(
+                          _regionRect!.left * width,
+                          _regionRect!.top * displayHeight,
+                          _regionRect!.right * width,
+                          _regionRect!.bottom * displayHeight,
+                        ),
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: scheme.primary.withValues(alpha: .15),
+                              border: Border.all(
+                                color: scheme.primary,
+                                width: 2,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                   ],
