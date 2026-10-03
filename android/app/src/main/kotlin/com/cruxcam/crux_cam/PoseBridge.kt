@@ -60,7 +60,13 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                     result.error("busy", "이전 분석의 정리가 끝난 뒤 다시 시도해주세요.", null); return
                 }
                 // 준비 중에도 취소할 수 있도록 모델을 열기 전에 세션을 먼저 등록합니다.
-                val session = Session(id, path, type == "video", engine!!)
+                val rawRegion = call.argument<List<Number>>("region")
+                val region = rawRegion?.map { it.toDouble() }
+                if (region != null && (region.size != 4 || region.any { !it.isFinite() || it !in 0.0..1.0 } ||
+                    region[2] - region[0] < 0.05 || region[3] - region[1] < 0.05)) {
+                    result.error("arguments", "분석 영역이 올바르지 않습니다.", null); return
+                }
+                val session = Session(id, path, type == "video", engine!!, region)
                 sessions[id] = session
                 run(result) {
                     session.checkActive()
@@ -128,7 +134,7 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
     private class Cancelled : RuntimeException()
 
     private inner class Session(val id: String, private val path: String,
-        private val video: Boolean, private val engine: String) {
+        private val video: Boolean, private val engine: String, private val region: List<Double>?) {
         val cancelled = AtomicBoolean(false)
         var width = 0
         var height = 0
@@ -168,7 +174,7 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
             checkActive()
             if (engine == "mlkit_accurate") {
                 val options = AccuratePoseDetectorOptions.Builder()
-                    .setDetectorMode(if (video) AccuratePoseDetectorOptions.STREAM_MODE else AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
+                    .setDetectorMode(if (video && region == null) AccuratePoseDetectorOptions.STREAM_MODE else AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
                     .build()
                 mlKit = PoseDetection.getClient(options)
             } else {
@@ -176,7 +182,7 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                 val asset = FlutterInjector.instance().flutterLoader().getLookupKeyForAsset("assets/models/$model")
                 val options = PoseLandmarker.PoseLandmarkerOptions.builder()
                     .setBaseOptions(BaseOptions.builder().setModelAssetPath(asset).setDelegate(Delegate.CPU).build())
-                    .setRunningMode(if (video) RunningMode.VIDEO else RunningMode.IMAGE)
+                    .setRunningMode(if (video && region == null) RunningMode.VIDEO else RunningMode.IMAGE)
                     .setNumPoses(4).setMinPoseDetectionConfidence(0.5f)
                     .setMinPosePresenceConfidence(0.5f).setMinTrackingConfidence(0.5f)
                     .setOutputSegmentationMasks(false).build()
@@ -193,6 +199,12 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                 if (timeMs == 0L && firstFrame != null) firstFrame!!.also { firstFrame = null }
                 else readVideo(timeMs)
             } else photo ?: throw IllegalArgumentException("사진을 읽을 수 없습니다.")
+            // 영역은 분석 입력에만 적용하며 결과 좌표는 원본 전체 화면으로 되돌립니다.
+            val left = region?.let { (it[0] * frame.width).toInt() } ?: 0
+            val top = region?.let { (it[1] * frame.height).toInt() } ?: 0
+            val right = region?.let { (it[2] * frame.width).roundToInt().coerceIn(left + 1, frame.width) } ?: frame.width
+            val bottom = region?.let { (it[3] * frame.height).roundToInt().coerceIn(top + 1, frame.height) } ?: frame.height
+            val input = if (region == null) frame else Bitmap.createBitmap(frame, left, top, right - left, bottom - top)
             try {
                 checkActive()
                 // SDK가 입력 이미지의 수명을 관리할 수 있으므로 미리보기는 먼저 만듭니다.
@@ -202,19 +214,22 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                 } else null
                 val start = SystemClock.elapsedRealtimeNanos()
                 val poses: List<List<List<Float>>> = if (engine == "mlkit_accurate") {
-                    val detection = Tasks.await(mlKit!!.process(InputImage.fromBitmap(frame, 0)), 30, TimeUnit.SECONDS)
+                    val detection = Tasks.await(mlKit!!.process(InputImage.fromBitmap(input, 0)), 30, TimeUnit.SECONDS)
                     if (detection.allPoseLandmarks.isEmpty()) emptyList() else listOf((0..32).map { i ->
                         val p = detection.getPoseLandmark(i)
                         if (p == null) listOf(0f, 0f, 0f, 0f) else listOf(
-                            p.position.x / frame.width, p.position.y / frame.height,
+                            (left + p.position.x) / frame.width, (top + p.position.y) / frame.height,
                             p.position3D.z / frame.width, p.inFrameLikelihood)
                     })
                 } else {
-                    val image = BitmapImageBuilder(frame).build()
+                    val image = BitmapImageBuilder(input).build()
                     try {
-                        val detection = if (video) landmarker!!.detectForVideo(image, timeMs) else landmarker!!.detect(image)
+                        val detection = if (video && region == null) landmarker!!.detectForVideo(image, timeMs) else landmarker!!.detect(image)
                         detection.landmarks().map { points -> points.map { p ->
-                            listOf(p.x(), p.y(), p.z(), minOf(p.visibility().orElse(0f), p.presence().orElse(1f)))
+                            listOf((left + p.x() * input.width) / frame.width,
+                                (top + p.y() * input.height) / frame.height,
+                                p.z() * input.width / frame.width,
+                                minOf(p.visibility().orElse(0f), p.presence().orElse(1f)))
                         } }
                     } finally { image.close() }
                 }
@@ -225,6 +240,7 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                 if (previewBytes != null) output["preview"] = previewBytes
                 return output
             } finally {
+                if (input !== frame && !input.isRecycled) input.recycle()
                 if (video && !frame.isRecycled) frame.recycle()
             }
         }
