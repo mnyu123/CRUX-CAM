@@ -226,6 +226,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                     Text(switch (state.phase) {
                       AnalysisPhase.preparing => '모델과 영상을 준비하고 있습니다…',
                       AnalysisPhase.cancelling => '분석을 취소하고 자원을 정리하고 있습니다…',
+                      AnalysisPhase.tracking => '선택한 클라이머의 움직임을 연결하고 있습니다…',
                       _ => '${state.completed} / ${state.total} 프레임 분석 중',
                     }),
                     TextButton(
@@ -319,11 +320,13 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                             if (frame.bodies[i].usable)
                               ActionChip(
                                 label: Text('사람 ${i + 1}'),
-                                onPressed: state.saving
+                                onPressed: state.saving || state.busy
                                     ? null
                                     : () {
                                         unawaited(_pause());
-                                        _analysis.selectTarget(index, i);
+                                        unawaited(
+                                          _analysis.selectTarget(index, i),
+                                        );
                                       },
                               ),
                         ],
@@ -352,7 +355,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
                         key: const Key('save-analysis'),
-                        onPressed: state.saving
+                        onPressed: state.saving || state.busy
                             ? null
                             : () => unawaited(
                                 _analysis.save(widget.info.source.name),
@@ -442,11 +445,13 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                       choices.sort((a, b) => a.distance.compareTo(b.distance));
                       if (choices.isNotEmpty) {
                         unawaited(_pause());
-                        _analysis.selectTarget(
-                          result.indexAt(
-                            _player?.value.position.inMilliseconds ?? 0,
+                        unawaited(
+                          _analysis.selectTarget(
+                            result.indexAt(
+                              _player?.value.position.inMilliseconds ?? 0,
+                            ),
+                            choices.first.index,
                           ),
-                          choices.first.index,
                         );
                       }
                     },

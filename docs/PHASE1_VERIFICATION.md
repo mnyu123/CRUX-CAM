@@ -70,7 +70,7 @@ Android 공식 문서는 Windows Hypervisor Platform(WHPX)을 권장한다. Wind
 
 또한 C:의 Pub 캐시와 D:의 프로젝트 간 경로 변환이 Kotlin incremental compilation에서 실패했다. `android/gradle.properties`의 `kotlin.incremental=false`로 해결했다. 이 설정은 Kotlin 증분 컴파일을 끄므로 해당 부분의 재빌드 시간이 늘 수 있다.
 
-Phase 1 완료 판정은 실제 기기의 수동 항목과 통합 테스트 확인 뒤에 한다. 현재 상태는 구현·정적 분석·자동 테스트·APK 빌드 완료, 실제 기기 검증 대기다.
+후속 사용자 확인: 재생·일시정지·탐색, 반복 영상 선택, 사진/영상 전환, 취소 유지·백그라운드 정지, 파일 크기·해상도 표시의 수동 검증 5개를 모두 통과했습니다. Phase 1은 aedcc0c로 커밋했고 이 상태를 Phase 2 기준으로 삼습니다. 위의 추가 환경·오류 시나리오와 iOS 실행 항목은 사용자 확인 없이 통과 처리하지 않습니다.
 
 ## 가상 기기에 동영상 전달하기
 

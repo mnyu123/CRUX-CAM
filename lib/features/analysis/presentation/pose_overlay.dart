@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 
 import '../models/pose_models.dart';
 
@@ -63,8 +64,8 @@ class PoseOverlay extends CustomPainter {
           textDirection: TextDirection.ltr,
         )..layout();
         final offset = Offset(
-          rect.left.clamp(0, size.width - 20),
-          rect.top.clamp(0, size.height - 22),
+          rect.left.clamp(0, math.max(0, size.width - 20)),
+          rect.top.clamp(0, math.max(0, size.height - 22)),
         );
         canvas.drawRect(
           offset & const Size(20, 22),

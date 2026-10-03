@@ -23,6 +23,20 @@ class _MediaScreenState extends ConsumerState<MediaScreen>
   late final MediaController _controller;
   PageRoute<dynamic>? _route;
   bool _covered = false;
+  bool _analysisOpen = false;
+
+  Future<void> _openAnalysis(MediaInfo info) async {
+    if (_analysisOpen) return;
+    setState(() => _analysisOpen = true);
+    try {
+      // 버튼을 연속으로 눌러도 같은 분석 화면과 플레이어를 여러 개 만들지 않습니다.
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => AnalysisScreen(info: info)),
+      );
+    } finally {
+      if (mounted) setState(() => _analysisOpen = false);
+    }
+  }
 
   @override
   void initState() {
@@ -168,13 +182,9 @@ class _MediaScreenState extends ConsumerState<MediaScreen>
                     const SizedBox(height: 20),
                     OutlinedButton(
                       key: const Key('open-analysis'),
-                      onPressed: state.isLoading
+                      onPressed: state.isLoading || _analysisOpen
                           ? null
-                          : () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => AnalysisScreen(info: info),
-                              ),
-                            ),
+                          : () => unawaited(_openAnalysis(info)),
                       child: const Text('클라이머 분석'),
                     ),
                     const SizedBox(height: 8),

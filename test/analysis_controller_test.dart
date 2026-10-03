@@ -48,7 +48,7 @@ void main() {
     );
     expect(service.calls, 5);
     expect(service.closed, hasLength(1));
-    controller.selectTarget(0, 0);
+    await controller.selectTarget(0, 0);
     await controller.save(info.source.name);
     final state = container.read(analysisControllerProvider);
     expect(state.error, isNull);
@@ -95,6 +95,18 @@ void main() {
     await controller.analyze(info, PoseEngine.mediaPipeFull, 5);
     expect(service.closed, hasLength(1));
     expect(container.read(analysisControllerProvider).error, '영상이 손상되었습니다.');
+  });
+  test('관절 연결 계산을 취소하면 새 대상 결과를 적용하지 않는다', () async {
+    await controller.analyze(info, PoseEngine.mediaPipeFull, 5);
+    final selection = controller.selectTarget(0, 0);
+    expect(
+      container.read(analysisControllerProvider).phase,
+      AnalysisPhase.tracking,
+    );
+    controller.cancel();
+    await selection;
+    expect(container.read(analysisControllerProvider).result!.tracked, isEmpty);
+    expect(container.read(analysisControllerProvider).busy, isFalse);
   });
   test('종료된 화면은 대기 중이던 분석 결과로 상태를 갱신하지 않는다', () async {
     service.pendingFrame = Completer<PoseFrame>();

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/pose/analysis_store.dart';
@@ -19,6 +20,7 @@ enum AnalysisPhase {
   idle,
   preparing,
   analyzing,
+  tracking,
   cancelling,
   ready,
   cancelled,
@@ -47,6 +49,7 @@ class AnalysisState {
   bool get busy => [
     AnalysisPhase.preparing,
     AnalysisPhase.analyzing,
+    AnalysisPhase.tracking,
     AnalysisPhase.cancelling,
   ].contains(phase);
 }
@@ -204,25 +207,38 @@ class AnalysisController extends Notifier<AnalysisState> {
     }
   }
 
-  void selectTarget(int frameIndex, int bodyIndex) {
+  Future<void> selectTarget(int frameIndex, int bodyIndex) async {
     final result = state.result;
-    if (result == null || state.saving) return;
-    final frame = result.frames[frameIndex];
+    if (result == null || state.saving || state.busy) return;
+    final engines = state.engines;
+    final generation = ++_generation;
+    _cancelled = false;
+    state = AnalysisState(
+      phase: AnalysisPhase.tracking,
+      engines: engines,
+      result: result,
+    );
     try {
-      final tracked = SubjectTracker().track(
+      final frame = result.frames[frameIndex];
+      // 긴 영상의 대상 선택도 화면을 멈추지 않도록 좌표 계산을 별도로 실행합니다.
+      final tracked = await compute(_trackFrames, (
         result.frames,
         frameIndex,
         bodyIndex,
-      );
+      ));
+      if (!ref.mounted || generation != _generation) return;
       state = AnalysisState(
         phase: AnalysisPhase.ready,
-        engines: state.engines,
-        result: result.withTracking(tracked, frame.timeMs, bodyIndex),
+        engines: engines,
+        result: _cancelled
+            ? result
+            : result.withTracking(tracked, frame.timeMs, bodyIndex),
       );
     } catch (error) {
+      if (!ref.mounted || generation != _generation) return;
       state = AnalysisState(
         phase: AnalysisPhase.ready,
-        engines: state.engines,
+        engines: engines,
         result: result,
         error: _message(error),
       );
@@ -231,7 +247,9 @@ class AnalysisController extends Notifier<AnalysisState> {
 
   Future<void> save(String sourceName) async {
     final result = state.result;
-    if (result == null || result.tracked.isEmpty || state.saving) return;
+    if (result == null || result.tracked.isEmpty || state.saving || state.busy) {
+      return;
+    }
     final generation = _generation;
     final engines = state.engines;
     state = AnalysisState(
@@ -273,3 +291,6 @@ class AnalysisController extends Notifier<AnalysisState> {
     _ => '분석 중 오류가 발생했습니다. 파일을 다시 선택해 시도해주세요.',
   };
 }
+
+List<TrackedFrame> _trackFrames((List<PoseFrame>, int, int) input) =>
+    SubjectTracker().track(input.$1, input.$2, input.$3);

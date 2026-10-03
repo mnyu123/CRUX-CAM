@@ -50,6 +50,15 @@ void main() {
       );
       await tester.ensureVisible(find.text('사람 1'));
       await tester.tap(find.text('사람 1'));
+      await tester.runAsync(() async {
+        for (
+          var i = 0;
+          i < 100 && container.read(analysisControllerProvider).busy;
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
       await tester.pumpAndSettle();
       expect(find.text('대상 추적 중'), findsOneWidget);
       expect(find.byKey(const Key('save-analysis')), findsOneWidget);
