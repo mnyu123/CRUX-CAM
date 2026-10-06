@@ -1,7 +1,7 @@
 # Phase 3 Android 검증 — 2026-10-06
 
 - Flutter 3.47.5 / Dart 3.13.4, Android API 36 emulator-5554.
-- `flutter analyze`: No issues found. 공통 테스트 54개 통과.
+- `flutter analyze`: No issues found. 공통 테스트 56개 통과.
 - Media3 Transformer/effect 1.9.2와 기존 재생 SDK 버전 일치. APK 디버그 빌드 성공.
 - `integration_test/export_test.dart`: 네이티브 3개 테스트 통과. 직접 만든 4초 합성 영상으로 3:4, 이동 크롭, 회전, 소리 유지/제거, 실제 결과 재생, 갤러리 저장, 준비 중 취소 뒤 재시도, 진행·결과 화면 복귀·접근성 트리를 확인.
 - Windows 재실행: `.\scripts\android_phase2.ps1 -Action integration -Suite export -DeviceId emulator-5554`. 화면 캡처도 필요하면 Action을 visual로 바꿈. 기존 pose 테스트는 기본 Suite로 유지.
