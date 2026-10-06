@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../app/routes.dart';
+import '../../analysis/presentation/analysis_screen.dart';
 import '../application/media_controller.dart';
 import '../models/media_info.dart';
 import 'media_formatters.dart';
@@ -22,6 +23,20 @@ class _MediaScreenState extends ConsumerState<MediaScreen>
   late final MediaController _controller;
   PageRoute<dynamic>? _route;
   bool _covered = false;
+  bool _analysisOpen = false;
+
+  Future<void> _openAnalysis(MediaInfo info) async {
+    if (_analysisOpen) return;
+    setState(() => _analysisOpen = true);
+    try {
+      // 버튼을 연속으로 눌러도 같은 분석 화면과 플레이어를 여러 개 만들지 않습니다.
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => AnalysisScreen(info: info)),
+      );
+    } finally {
+      if (mounted) setState(() => _analysisOpen = false);
+    }
+  }
 
   @override
   void initState() {
@@ -165,13 +180,16 @@ class _MediaScreenState extends ConsumerState<MediaScreen>
                   ),
                   if (info != null) ...[
                     const SizedBox(height: 20),
-                    const OutlinedButton(
-                      onPressed: null,
-                      child: Text('분석 시작 · 준비 중'),
+                    OutlinedButton(
+                      key: const Key('open-analysis'),
+                      onPressed: state.isLoading || _analysisOpen
+                          ? null
+                          : () => unawaited(_openAnalysis(info)),
+                      child: const Text('클라이머 분석'),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '지금은 미디어 확인 단계입니다. 자동 분석과 편집은 다음 단계에서 제공됩니다.',
+                      '관절을 분석하고 추적할 클라이머 한 명을 선택할 수 있습니다.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),

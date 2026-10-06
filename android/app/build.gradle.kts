@@ -19,7 +19,7 @@ android {
         applicationId = "com.cruxcam.crux_cam"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
@@ -46,4 +46,11 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // 모델 버전을 고정하여 다음 빌드에서 인식 결과가 임의로 바뀌지 않게 합니다.
+    implementation("com.google.mediapipe:tasks-vision:1.0.0")
+    implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 }

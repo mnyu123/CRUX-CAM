@@ -62,7 +62,7 @@ void main() {
       await tester.tap(find.byKey(const Key('toggle-playback')));
       await tester.pumpAndSettle();
       expect(find.byTooltip('재생'), findsOneWidget);
-      expect(find.text('분석 시작 · 준비 중'), findsOneWidget);
+      expect(find.text('클라이머 분석'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
