@@ -37,6 +37,40 @@ AnalysisResult analysis(
 );
 
 void main() {
+  test('3:4는 세로이며 위치 보정이 전체 경로에 적용되고 영상 밖으로 나가지 않는다', () {
+    expect(CropRatio.threeFour.aspect, .75);
+    final source = analysis([bodyAt(.4), bodyAt(.5)]);
+    final base = CropPlanner().plan(
+      source,
+      const CropOptions(zoom: 2, smooth: false),
+    );
+    final shifted = CropPlanner().plan(
+      source,
+      const CropOptions(zoom: 2, smooth: false, offsetX: .1, offsetY: -.1),
+    );
+    for (var i = 0; i < base.frames.length; i++) {
+      expect(
+        shifted.frames[i].rect.centerX,
+        closeTo(base.frames[i].rect.centerX + .1, .0001),
+      );
+      expect(
+        shifted.frames[i].rect.centerY,
+        closeTo(base.frames[i].rect.centerY - .1, .0001),
+      );
+    }
+    final edge = CropPlanner().plan(
+      source,
+      const CropOptions(zoom: 2, offsetX: .5, offsetY: .5),
+    );
+    expect(
+      edge.frames.last.rect.left + edge.frames.last.rect.width,
+      lessThanOrEqualTo(1.000001),
+    );
+    expect(
+      edge.frames.last.rect.top + edge.frames.last.rect.height,
+      lessThanOrEqualTo(1.000001),
+    );
+  });
   test('모든 비율과 화면 가장자리의 사람에서도 크롭 영역이 영상 안에 유지된다', () {
     for (final size in [(720, 1280), (1280, 720)]) {
       for (final ratio in CropRatio.values) {

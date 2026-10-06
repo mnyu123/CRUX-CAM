@@ -12,7 +12,11 @@ class CropPlanner {
         result.trackedCount == 0 ||
         !options.zoom.isFinite ||
         options.zoom < 1 ||
-        options.zoom > 2.5) {
+        options.zoom > 2.5 ||
+        !options.offsetX.isFinite ||
+        !options.offsetY.isFinite ||
+        options.offsetX.abs() > .5 ||
+        options.offsetY.abs() > .5) {
       throw const FormatException('추적할 사람을 먼저 선택해주세요.');
     }
     final sourceAspect = result.session.width / result.session.height;
@@ -63,7 +67,11 @@ class CropPlanner {
             math.max(.12, right - left) * 1.4 / relativeAspect,
           ) /
           options.zoom;
-      final desired = around((left + right) / 2, (top + bottom) / 2, height);
+      final desired = around(
+        (left + right) / 2 + options.offsetX,
+        (top + bottom) / 2 + options.offsetY,
+        height,
+      );
       if (options.smooth && hasTarget) {
         final dt = math.max(
           .001,

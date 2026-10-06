@@ -18,29 +18,44 @@ class CropOptions {
     this.ratio = CropRatio.portrait,
     this.zoom = 1,
     this.smooth = true,
+    this.offsetX = 0,
+    this.offsetY = 0,
   });
   final CropRatio ratio;
   final double zoom;
   final bool smooth;
+  // 자동 추적 위치에서 화면 전체 크기를 기준으로 더 이동할 거리입니다.
+  final double offsetX, offsetY;
   // 별도 실행 공간에서 돌아온 설정도 내용이 같으면 같은 설정으로 판단합니다.
   @override
   bool operator ==(Object other) =>
       other is CropOptions &&
       ratio == other.ratio &&
       zoom == other.zoom &&
-      smooth == other.smooth;
+      smooth == other.smooth &&
+      offsetX == other.offsetX &&
+      offsetY == other.offsetY;
   @override
-  int get hashCode => Object.hash(ratio, zoom, smooth);
-  CropOptions copyWith({CropRatio? ratio, double? zoom, bool? smooth}) =>
-      CropOptions(
-        ratio: ratio ?? this.ratio,
-        zoom: zoom ?? this.zoom,
-        smooth: smooth ?? this.smooth,
-      );
+  int get hashCode => Object.hash(ratio, zoom, smooth, offsetX, offsetY);
+  CropOptions copyWith({
+    CropRatio? ratio,
+    double? zoom,
+    bool? smooth,
+    double? offsetX,
+    double? offsetY,
+  }) => CropOptions(
+    ratio: ratio ?? this.ratio,
+    zoom: zoom ?? this.zoom,
+    smooth: smooth ?? this.smooth,
+    offsetX: offsetX ?? this.offsetX,
+    offsetY: offsetY ?? this.offsetY,
+  );
   Map<String, dynamic> toJson() => {
     'ratio': ratio.name,
     'zoom': zoom,
     'smooth': smooth,
+    'offsetX': offsetX,
+    'offsetY': offsetY,
   };
 }
 

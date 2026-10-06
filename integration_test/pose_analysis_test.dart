@@ -9,6 +9,7 @@ import 'package:crux_cam/features/analysis/application/analysis_controller.dart'
 import 'package:crux_cam/features/analysis/models/pose_models.dart';
 import 'package:crux_cam/features/crop/presentation/crop_screen.dart';
 import 'package:crux_cam/features/crop/presentation/crop_viewport.dart';
+import 'package:crux_cam/features/export/presentation/export_preview.dart';
 import 'package:crux_cam/features/media/models/media_info.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -464,6 +465,7 @@ void main() {
         if (Platform.isAndroid) await binding.convertFlutterSurfaceToImage();
         await tester.pump();
         await binding.takeScreenshot('phase2-subject-controls');
+        expect(tester.takeException(), isNull, reason: '사람 선택 화면');
         await tester.ensureVisible(find.byKey(const Key('open-crop')));
         await tester.tap(find.byKey(const Key('open-crop')));
         for (
@@ -498,6 +500,54 @@ void main() {
         await cropPlayer.pause();
         await tester.pumpAndSettle();
         await binding.takeScreenshot('phase3-crop-motion');
+        expect(tester.takeException(), isNull, reason: '크롭 미리보기');
+        await tester.ensureVisible(find.byKey(const Key('crop-ratio')));
+        await tester.tap(find.byKey(const Key('crop-ratio')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('3:4').last);
+        for (var i = 0; i < 100; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+          final button = tester.widget<FilledButton>(
+            find.byKey(const Key('export-video')),
+          );
+          if (button.onPressed != null) break;
+        }
+        await tester.ensureVisible(find.byKey(const Key('export-video')));
+        await tester.tap(find.byKey(const Key('export-video')));
+        for (
+          var i = 0;
+          i < 1800 && find.text('저장 완료').evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(find.text('저장 완료'), findsOneWidget);
+        expect(find.textContaining('MP4 생성 완료'), findsOneWidget);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: 'MP4 변환·저장 완료');
+        await binding.takeScreenshot('phase3-export-complete');
+        await tester.ensureVisible(find.byKey(const Key('preview-export')));
+        await tester.tap(find.byKey(const Key('preview-export')));
+        for (
+          var i = 0;
+          i < 200 && find.byType(VideoProgressIndicator).evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        final exportedPlayer = tester
+            .widget<VideoPlayer>(find.byType(VideoPlayer).last)
+            .controller;
+        expect(exportedPlayer.value.aspectRatio, closeTo(3 / 4, .01));
+        await exportedPlayer.seekTo(const Duration(seconds: 12));
+        await exportedPlayer.play();
+        await tester.pump(const Duration(milliseconds: 700));
+        await exportedPlayer.pause();
+        await tester.pumpAndSettle();
+        await binding.takeScreenshot('phase3-export-playback');
+        Navigator.of(tester.element(find.byType(ExportPreview))).pop();
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: '결과 화면에서 복귀');
         Navigator.of(tester.element(find.byType(CropScreen))).pop();
         await tester.pumpAndSettle();
         if (uiOnly) {
