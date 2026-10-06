@@ -3,6 +3,7 @@ package com.cruxcam.crux_cam
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.os.Build
@@ -12,6 +13,7 @@ import android.os.SystemClock
 import androidx.exifinterface.media.ExifInterface
 import com.google.android.gms.tasks.Tasks
 import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.framework.image.MPImage
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -205,6 +207,7 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
             val right = region?.let { (it[2] * frame.width).roundToInt().coerceIn(left + 1, frame.width) } ?: frame.width
             val bottom = region?.let { (it[3] * frame.height).roundToInt().coerceIn(top + 1, frame.height) } ?: frame.height
             val input = if (region == null) frame else Bitmap.createBitmap(frame, left, top, right - left, bottom - top)
+            var managedImage: MPImage? = null
             try {
                 checkActive()
                 // SDK가 입력 이미지의 수명을 관리할 수 있으므로 미리보기는 먼저 만듭니다.
@@ -223,7 +226,8 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                     })
                 } else {
                     val image = BitmapImageBuilder(input).build()
-                    try {
+                    managedImage = image
+                    run {
                         val detection = if (video && region == null) landmarker!!.detectForVideo(image, timeMs) else landmarker!!.detect(image)
                         detection.landmarks().map { points -> points.map { p ->
                             listOf((left + p.x() * input.width) / frame.width,
@@ -231,15 +235,17 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                                 p.z() * input.width / frame.width,
                                 minOf(p.visibility().orElse(0f), p.presence().orElse(1f)))
                         } }
-                    } finally { image.close() }
+                    }
                 }
                 val inferenceMs = (SystemClock.elapsedRealtimeNanos() - start) / 1000000.0
                 checkActive()
                 lastTime = timeMs
-                val output = mutableMapOf<String, Any>("timeMs" to timeMs, "poses" to poses, "inferenceMs" to inferenceMs)
+                val output = mutableMapOf<String, Any>("timeMs" to timeMs, "poses" to poses, "inferenceMs" to inferenceMs,
+                    "appearances" to poses.map { torsoColors(frame, it) })
                 if (previewBytes != null) output["preview"] = previewBytes
                 return output
             } finally {
+                managedImage?.close()
                 if (input !== frame && !input.isRecycled) input.recycle()
                 if (video && !frame.isRecycled) frame.recycle()
             }
@@ -269,6 +275,30 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
             if (image != null && !image.isRecycled) image.recycle()
             if (first != null && !first.isRecycled) first.recycle()
         }
+    }
+
+    /** 옷 색은 동일 인물 번호를 연결하는 보조 정보이며 이미지는 앱 밖으로 보내지 않습니다. */
+    private fun torsoColors(frame: Bitmap, points: List<List<Float>>): List<Float> {
+        val torso = listOf(11, 12, 23, 24).map { points[it] }
+        if (torso.any { it[3] < 0.35f } || frame.isRecycled) return emptyList()
+        val left = torso.minOf { it[0] }.coerceIn(0f, 1f)
+        val right = torso.maxOf { it[0] }.coerceIn(0f, 1f)
+        val top = torso.minOf { it[1] }.coerceIn(0f, 1f)
+        val bottom = torso.maxOf { it[1] }.coerceIn(0f, 1f)
+        if (right - left < 0.005f || bottom - top < 0.005f) return emptyList()
+        val histogram = FloatArray(96)
+        val hsv = FloatArray(3)
+        // 몸통 중앙만 작게 읽어 주변 홀드와 배경 색이 섞이는 것을 줄입니다.
+        for (row in 0 until 12) for (column in 0 until 12) {
+            val x = ((left + (right - left) * (0.2f + 0.6f * (column + 0.5f) / 12)) * frame.width).toInt().coerceIn(0, frame.width - 1)
+            val y = ((top + (bottom - top) * (0.2f + 0.6f * (row + 0.5f) / 12)) * frame.height).toInt().coerceIn(0, frame.height - 1)
+            Color.colorToHSV(frame.getPixel(x, y), hsv)
+            val hue = if (hsv[1] < 0.25f || hsv[2] < 0.2f) 0 else (hsv[0] / 45).toInt().coerceIn(0, 7)
+            val saturation = if (hsv[1] < 0.25f) 0 else if (hsv[1] < 0.6f) 1 else 2
+            val value = if (hsv[2] < 0.2f) 0 else if (hsv[2] < 0.45f) 1 else if (hsv[2] < 0.7f) 2 else 3
+            histogram[(hue * 3 + saturation) * 4 + value] += 1f / 144
+        }
+        return histogram.toList()
     }
 
     private fun readPhoto(path: String): Bitmap {
