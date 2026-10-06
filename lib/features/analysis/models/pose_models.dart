@@ -9,6 +9,11 @@ enum PoseEngine {
   const PoseEngine(this.id, this.label);
   final String id;
   final String label;
+  String get description => switch (this) {
+    mediaPipeFull => '관절을 자세히 확인할 때 쓰는 기본 모델이에요. 여러 사람을 함께 찾을 수 있어요.',
+    mediaPipeLite => '가볍고 빠르게 분석할 때 좋아요. 작은 사람이나 가려진 관절은 놓칠 수 있어요.',
+    mlKitAccurate => '한 사람의 관절을 정밀하게 분석하는 비교 모델이에요. 여러 명은 추가 영역 분석을 이용해주세요.',
+  };
 }
 
 /// 원본 전체 화면 기준의 분석 영역입니다. 실제 영상 크롭과는 별개입니다.
@@ -44,7 +49,15 @@ class PosePoint {
 /// 모든 플랫폼은 화면 회전을 적용한 이미지 기준의 0~1 좌표를 반환합니다.
 /// 원본 픽셀 수와 화면의 검은 여백이 달라도 같은 분석 결과를 사용할 수 있습니다.
 class PoseBody {
-  PoseBody(List<PosePoint> points) : points = List.unmodifiable(points) {
+  PoseBody(List<PosePoint> points, {List<double>? appearance})
+    : points = List.unmodifiable(points),
+      appearance =
+          appearance != null &&
+              appearance.length == 96 &&
+              appearance.every((v) => v.isFinite && v >= 0) &&
+              appearance.fold<double>(0, (a, b) => a + b) > 0
+          ? List.unmodifiable(appearance)
+          : null {
     if (points.length != 33 ||
         points.any(
           (p) =>
@@ -57,6 +70,8 @@ class PoseBody {
     }
   }
   final List<PosePoint> points;
+  // 옷 색 분포를 번호 연결의 보조 정보로만 씁니다. 얼굴 식별 정보는 아닙니다.
+  final List<double>? appearance;
 
   List<PosePoint> get visible => points.where((p) => p.reliable).toList();
   bool get usable =>
@@ -98,8 +113,12 @@ class PoseBody {
   }
 
   List<List<double>> toJson() => points.map((p) => p.toJson()).toList();
-  factory PoseBody.fromList(List<dynamic> values) => PoseBody(
+  factory PoseBody.fromList(
+    List<dynamic> values, {
+    List<dynamic>? appearance,
+  }) => PoseBody(
     values.map((p) => PosePoint.fromList(p as List<dynamic>)).toList(),
+    appearance: appearance?.map((v) => (v as num).toDouble()).toList(),
   );
 }
 
@@ -118,16 +137,26 @@ class PoseFrame {
   final List<int?> personIds;
   int? personIdAt(int index) =>
       index < personIds.length ? personIds[index] : null;
-  factory PoseFrame.fromMap(Map<dynamic, dynamic> data) => PoseFrame(
-    timeMs: (data['timeMs'] as num).toInt(),
-    bodies: List.unmodifiable(
-      (data['poses'] as List<dynamic>).map(
-        (p) => PoseBody.fromList(p as List<dynamic>),
+  factory PoseFrame.fromMap(Map<dynamic, dynamic> data) {
+    final poses = data['poses'] as List<dynamic>;
+    final appearances = data['appearances'] as List<dynamic>?;
+    return PoseFrame(
+      timeMs: (data['timeMs'] as num).toInt(),
+      bodies: List.unmodifiable(
+        List.generate(
+          poses.length,
+          (i) => PoseBody.fromList(
+            poses[i] as List<dynamic>,
+            appearance: appearances != null && i < appearances.length
+                ? appearances[i] as List<dynamic>?
+                : null,
+          ),
+        ),
       ),
-    ),
-    inferenceMs: (data['inferenceMs'] as num).toDouble(),
-    preview: data['preview'] as Uint8List?,
-  );
+      inferenceMs: (data['inferenceMs'] as num).toDouble(),
+      preview: data['preview'] as Uint8List?,
+    );
+  }
 }
 
 class PoseSession {
@@ -253,6 +282,7 @@ class AnalysisResult {
           'inferenceMs': frames[i].inferenceMs,
           'candidates': frames[i].bodies.map((p) => p.toJson()).toList(),
           'personIds': frames[i].personIds,
+          'appearances': frames[i].bodies.map((b) => b.appearance).toList(),
           if (tracked.isNotEmpty) 'target': tracked[i].toJson(),
         },
     ],

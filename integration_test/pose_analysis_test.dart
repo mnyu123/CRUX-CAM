@@ -7,6 +7,8 @@ import 'package:crux_cam/core/media/media_service.dart';
 import 'package:crux_cam/app/app.dart';
 import 'package:crux_cam/features/analysis/application/analysis_controller.dart';
 import 'package:crux_cam/features/analysis/models/pose_models.dart';
+import 'package:crux_cam/features/crop/presentation/crop_screen.dart';
+import 'package:crux_cam/features/crop/presentation/crop_viewport.dart';
 import 'package:crux_cam/features/media/models/media_info.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -219,6 +221,13 @@ void main() {
               'meanInferenceMs': result.meanInferenceMs,
               'elapsedMs': result.elapsedMs,
               'savedPath': saved.savedPath,
+              'personIds': result.frames
+                  .expand((f) => f.personIds.whereType<int>())
+                  .toSet()
+                  .toList(),
+              'colorFrames': result.frames
+                  .where((f) => f.bodies.any((b) => b.appearance != null))
+                  .length,
             });
           }
           debugPrint('CRUX_POSE_BENCHMARK=${jsonEncode(summaries)}');
@@ -402,8 +411,9 @@ void main() {
           isNotEmpty,
         );
         final multiple = result.frames.indexWhere(
-          (f) => f.personIds.whereType<int>().length >= 2,
+          (f) => f.personIds.contains(1) && f.personIds.contains(2),
         );
+        expect(multiple, greaterThanOrEqualTo(0));
         await player.seekTo(
           Duration(milliseconds: result.frames[multiple].timeMs),
         );
@@ -454,6 +464,65 @@ void main() {
         if (Platform.isAndroid) await binding.convertFlutterSurfaceToImage();
         await tester.pump();
         await binding.takeScreenshot('phase2-subject-controls');
+        await tester.ensureVisible(find.byKey(const Key('open-crop')));
+        await tester.tap(find.byKey(const Key('open-crop')));
+        for (
+          var i = 0;
+          i < 300 && find.byType(CropViewport).evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        await tester.pumpAndSettle();
+        expect(find.byType(CropScreen), findsOneWidget);
+        expect(find.byKey(const Key('crop-preview')), findsOneWidget);
+        await tester.ensureVisible(find.byKey(const Key('save-crop')));
+        await tester.tap(find.byKey(const Key('save-crop')));
+        for (
+          var i = 0;
+          i < 300 && find.text('크롭 경로와 설정을 앱 내부에 저장했습니다.').evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(find.text('크롭 경로와 설정을 앱 내부에 저장했습니다.'), findsOneWidget);
+        await binding.takeScreenshot('phase3-crop-preview');
+        // 크롭 미리보기 중에도 실제 영상의 재생과 시간 이동이 동작하는지 확인합니다.
+        final cropPlayer = tester
+            .widget<VideoPlayer>(find.byType(VideoPlayer).last)
+            .controller;
+        await cropPlayer.seekTo(const Duration(seconds: 12));
+        await cropPlayer.play();
+        await tester.pump(const Duration(milliseconds: 600));
+        expect(cropPlayer.value.isPlaying, isTrue);
+        await cropPlayer.pause();
+        await tester.pumpAndSettle();
+        await binding.takeScreenshot('phase3-crop-motion');
+        Navigator.of(tester.element(find.byType(CropScreen))).pop();
+        await tester.pumpAndSettle();
+        if (uiOnly) {
+          // 미리보기 검증에서도 가벼운 모델의 번호 연결 결과를 비교할 수 있게 보관합니다.
+          final controller = container.read(
+            analysisControllerProvider.notifier,
+          );
+          await controller.analyze(
+            MediaInfo(source: source, width: 720, height: 1280),
+            PoseEngine.mediaPipeLite,
+            5,
+          );
+          await controller.selectTarget(0, 0);
+          await controller.save(source.name);
+          final diagnostic = container.read(analysisControllerProvider);
+          IntegrationTestWidgetsFlutterBinding.instance.reportData ??=
+              <String, dynamic>{};
+          IntegrationTestWidgetsFlutterBinding
+              .instance
+              .reportData!['liteAnalysis'] = diagnostic.result!.toJson(
+            source.name,
+          );
+          debugPrint('CRUX_LITE_IDENTITY_PATH=${diagnostic.savedPath}');
+        }
+
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());

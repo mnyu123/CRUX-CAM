@@ -8,6 +8,7 @@ import 'package:video_player/video_player.dart';
 
 import '../../../core/media/media_service.dart';
 import '../../media/models/media_info.dart';
+import '../../crop/presentation/crop_screen.dart';
 import '../../media/presentation/media_formatters.dart';
 import '../application/analysis_controller.dart';
 import '../models/pose_models.dart';
@@ -28,6 +29,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
   int _fps = 5;
   bool _corrected = true;
   bool _playbackBusy = false;
+  bool _cropOpen = false;
   bool _drawingRegion = false;
   Offset? _regionStart;
   Rect? _regionRect;
@@ -153,6 +155,27 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
     if (mounted) setState(() {});
   }
 
+  Future<void> _openCrop(AnalysisResult result) async {
+    if (_cropOpen || result.trackedCount == 0) return;
+    _cropOpen = true;
+    try {
+      await _pause();
+      if (!mounted) return;
+      // 분석 화면의 재생을 정지한 뒤 크롭 화면이 별도의 재생기를 소유합니다.
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => CropScreen(
+            info: widget.info,
+            analysis: result,
+            initialTimeMs: _player?.value.position.inMilliseconds ?? 0,
+          ),
+        ),
+      );
+    } finally {
+      _cropOpen = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(analysisControllerProvider);
@@ -211,7 +234,17 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
           if (engine != null) ...[
             DropdownButtonFormField<PoseEngine>(
               initialValue: engine,
-              decoration: const InputDecoration(labelText: '분석 모델'),
+              decoration: InputDecoration(
+                labelText: '분석 모델',
+                helperText: engine.description,
+                helperMaxLines: 3,
+                suffixIcon: Tooltip(
+                  key: const Key('pose-model-help'),
+                  message: engine.description,
+                  triggerMode: TooltipTriggerMode.tap,
+                  child: const Icon(Icons.info_outline),
+                ),
+              ),
               items: state.engines
                   .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
                   .toList(),
@@ -265,6 +298,16 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
             ),
             if (tracked != null) ...[
               const SizedBox(height: 12),
+              FilledButton.icon(
+                key: const Key('open-crop'),
+                onPressed:
+                    state.busy || state.saving || result.trackedCount == 0
+                    ? null
+                    : () => unawaited(_openCrop(result)),
+                icon: const Icon(Icons.crop),
+                label: const Text('크롭 미리보기'),
+              ),
+              const SizedBox(height: 12),
               Text(switch (tracked.status) {
                 TrackStatus.tracked => '대상 추적 중',
                 TrackStatus.lost => '대상을 놓쳤습니다. 몸통이 보이는 시점에서 다시 선택해주세요.',
@@ -310,7 +353,7 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
           ],
           const SizedBox(height: 16),
           Text(
-            '현재는 10분 이하의 영상과 사진을 분석합니다. 크롭과 영상 내보내기는 다음 단계에서 제공됩니다.',
+            '현재는 10분 이하의 영상과 사진을 분석하고 크롭을 미리봅니다. 영상 내보내기는 다음 단계에서 제공됩니다.',
             style: TextStyle(color: scheme.onSurfaceVariant),
           ),
         ],

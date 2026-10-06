@@ -1,9 +1,11 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:crux_cam/app/app.dart';
 import 'package:crux_cam/core/media/media_service.dart';
 import 'package:crux_cam/core/pose/pose_service.dart';
 import 'package:crux_cam/features/analysis/application/analysis_controller.dart';
+import 'package:crux_cam/features/analysis/models/pose_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -47,6 +49,19 @@ void main() {
       await tester.tap(find.byKey(const Key('open-analysis')));
       await tester.pumpAndSettle();
       expect(find.text('클라이머 분석'), findsOneWidget);
+      expect(find.text(PoseEngine.mediaPipeFull.description), findsOneWidget);
+      expect(find.byKey(const Key('pose-model-help')), findsOneWidget);
+      final modelSelector = find.byType(DropdownButtonFormField<PoseEngine>);
+      await tester.ensureVisible(modelSelector);
+      await tester.tap(modelSelector);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('MediaPipe Lite').last);
+      await tester.pumpAndSettle();
+      expect(find.text(PoseEngine.mediaPipeLite.description), findsOneWidget);
+      await tester.tap(modelSelector);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('MediaPipe Full').last);
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.byKey(const Key('run-analysis')));
       await tester.tap(find.byKey(const Key('run-analysis')));
       await tester.pump();
@@ -173,6 +188,57 @@ void main() {
         );
         expect(tester.takeException(), isNull);
       }
+      tester.view.physicalSize = const Size(390, 844);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('open-crop')));
+      await tester.tap(find.byKey(const Key('open-crop')));
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 500)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('크롭 미리보기'), findsOneWidget);
+      expect(find.byKey(const Key('crop-preview')), findsOneWidget);
+      expect(find.byKey(const Key('crop-play')).hitTestable(), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('crop-ratio')));
+      await tester.tap(find.byKey(const Key('crop-ratio')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('1:1').last);
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 500)),
+      );
+      await tester.pumpAndSettle();
+      final cropRect = tester.getRect(find.byKey(const Key('crop-preview')));
+      expect(cropRect.width / cropRect.height, closeTo(1, .001));
+      await tester.ensureVisible(find.byKey(const Key('save-crop')));
+      expect(
+        tester
+            .widget<OutlinedButton>(find.byKey(const Key('save-crop')))
+            .onPressed,
+        isNotNull,
+      );
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('save-crop')));
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('크롭 경로와 설정을 앱 내부에 저장했습니다.'), findsOneWidget);
+      final savedCrop = await tester.runAsync(() async {
+        final file = (await directory.list().toList())
+            .whereType<File>()
+            .singleWhere((f) => f.uri.pathSegments.last.startsWith('crop_'));
+        return jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      });
+      expect(savedCrop!['kind'], 'crop_timeline');
+      expect(savedCrop['personId'], 2);
+      expect(savedCrop['options']['ratio'], 'square');
+      expect(savedCrop['frames'], hasLength(5));
+      Navigator.of(tester.element(find.text('크롭 미리보기'))).pop();
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      expect(platform.disposed, contains(3));
+      expect(platform.disposed, isNot(contains(2)));
       Navigator.of(tester.element(find.text('클라이머 분석'))).pop();
       await tester.pumpAndSettle();
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));

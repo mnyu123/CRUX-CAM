@@ -275,6 +275,7 @@ class AnalysisController extends Notifier<AnalysisState> {
         frames,
         frameIndex,
         personId == null ? bodyIndex : 0,
+        personId != null,
       ));
       if (!ref.mounted || generation != _generation) return;
       state = AnalysisState(
@@ -345,8 +346,13 @@ class AnalysisController extends Notifier<AnalysisState> {
   };
 }
 
-List<TrackedFrame> _trackFrames((List<PoseFrame>, int, int) input) =>
-    SubjectTracker().track(input.$1, input.$2, input.$3);
+List<TrackedFrame> _trackFrames((List<PoseFrame>, int, int, bool) input) =>
+    SubjectTracker().track(
+      input.$1,
+      input.$2,
+      input.$3,
+      lockedIdentity: input.$4,
+    );
 
 List<PoseFrame> _catalogFrames((List<PoseFrame>?, List<PoseFrame>) input) =>
     input.$1 == null

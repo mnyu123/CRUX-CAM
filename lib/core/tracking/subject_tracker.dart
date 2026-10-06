@@ -5,7 +5,12 @@ import '../../features/analysis/models/pose_models.dart';
 /// 선택한 사람의 위치와 몸의 크기를 기준으로 연결합니다.
 /// 확신하기 어려운 교차나 긴 가림에서는 다른 사람으로 옮겨 가지 않고 끊김을 남깁니다.
 class SubjectTracker {
-  List<TrackedFrame> track(List<PoseFrame> frames, int anchor, int bodyIndex) {
+  List<TrackedFrame> track(
+    List<PoseFrame> frames,
+    int anchor,
+    int bodyIndex, {
+    bool lockedIdentity = false,
+  }) {
     final selected = frames[anchor].bodies[bodyIndex];
     if (!selected.usable) throw const FormatException('몸통이 보이는 사람을 선택해주세요.');
     final output = List<TrackedFrame>.generate(
@@ -19,8 +24,8 @@ class SubjectTracker {
       corrected: selected,
     );
     // 중간 시점에서 사람을 선택해도 앞뒤를 따로 추적하여 영상 전체를 분석합니다.
-    _walk(frames, output, anchor, selected, 1);
-    _walk(frames, output, anchor, selected, -1);
+    _walk(frames, output, anchor, selected, 1, lockedIdentity);
+    _walk(frames, output, anchor, selected, -1, lockedIdentity);
     return List.unmodifiable(output);
   }
 
@@ -30,6 +35,7 @@ class SubjectTracker {
     int anchor,
     PoseBody selected,
     int direction,
+    bool lockedIdentity,
   ) {
     var last = selected;
     var lastTime = frames[anchor].timeMs;
@@ -45,7 +51,24 @@ class SubjectTracker {
       final gap = (frame.timeMs - lastTime).abs();
       // 오래 가려진 뒤의 재등장은 좌표만으로 동일 인물임을 보장할 수 없습니다.
       // 2초를 넘으면 자동 연결을 중단하고 사용자가 해당 시점에서 다시 선택합니다.
-      if (gap > 2000) continue;
+      if (gap > 2000 && !lockedIdentity) continue;
+      if (lockedIdentity &&
+          frame.bodies.length == 1 &&
+          frame.bodies.first.usable) {
+        // 번호 연결을 끝낸 동일 인물만 받은 경우 자세 변화·긴 가림 뒤에도 다시 이어갑니다.
+        final current = frame.bodies.first;
+        final dt = math.max(gap / 1000, .001);
+        corrected = _smooth(corrected, current, dt, gap > 600);
+        output[i] = TrackedFrame(
+          timeMs: frame.timeMs,
+          status: TrackStatus.tracked,
+          raw: current,
+          corrected: corrected,
+        );
+        last = current;
+        lastTime = frame.timeMs;
+        continue;
+      }
       final dt = math.max(gap / 1000, 0.001);
       final center = last.center;
       final predictedX = center.x + vx * math.min(dt, 0.5);
@@ -107,6 +130,7 @@ class SubjectTracker {
           c.confidence,
         );
       }),
+      appearance: current.appearance,
     );
   }
 }
