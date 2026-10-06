@@ -25,7 +25,9 @@ CropTimeline timeline({List<CropFrame>? frames}) => CropTimeline(
 );
 
 class FakeExport extends ExportService {
+  final List<Map<Object?, Object?>> intermediate = [];
   Completer<void>? opening;
+  Completer<void>? releasing;
   Map<String, Object?>? request;
   int cancelled = 0, released = 0, started = 0;
   bool fail = false, denySave = false;
@@ -37,7 +39,10 @@ class FakeExport extends ExportService {
   }
 
   @override
-  Future<Map<Object?, Object?>> status(String id) async => fail
+  Future<Map<Object?, Object?>> status(String id) async =>
+      intermediate.isNotEmpty
+      ? intermediate.removeAt(0)
+      : fail
       ? {'state': 'failed', 'error': '인코더가 지원하지 않습니다.'}
       : {
           'state': 'completed',
@@ -56,6 +61,7 @@ class FakeExport extends ExportService {
   @override
   Future<void> release(String id) async {
     released++;
+    await releasing?.future;
   }
 
   @override
@@ -68,6 +74,44 @@ class FakeExport extends ExportService {
 }
 
 void main() {
+  test('완료 파일이 확인되어도 네이티브 정리 전에는 다음 내보내기를 시작하지 않는다', () async {
+    final service = FakeExport()..releasing = Completer<void>();
+    final controller = ExportController(service);
+    final first = controller.start(
+      '/input.mp4',
+      timeline(),
+      const ExportSettings(),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.stage, ExportStage.completed);
+    expect(controller.busy, true);
+    await controller.start('/next.mp4', timeline(), const ExportSettings());
+    expect(service.started, 1);
+    service.releasing!.complete();
+    await first;
+    expect(controller.busy, false);
+    controller.dispose();
+  });
+  test('완료 확인 전에는 99%까지만 표시하고 같은 진행률은 중복 알림을 보내지 않는다', () async {
+    final service = FakeExport()
+      ..intermediate.addAll([
+        {'state': 'rendering', 'progress': 1.0},
+        {'state': 'rendering', 'progress': null},
+      ]);
+    final controller = ExportController(service);
+    final values = <double>[];
+    controller.addListener(() {
+      if (controller.stage == ExportStage.rendering &&
+          controller.progress != null) {
+        values.add(controller.progress!);
+      }
+    });
+    await controller.start('/input.mp4', timeline(), const ExportSettings());
+    expect(values, [.99]);
+    expect(controller.progress, 1);
+    expect(controller.stage, ExportStage.completed);
+    controller.dispose();
+  });
   test('기본은 MP4 H.264와 소리 유지이며 미리보기 좌표를 그대로 내보낸다', () async {
     final service = FakeExport();
     final controller = ExportController(service);

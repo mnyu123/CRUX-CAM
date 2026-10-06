@@ -576,7 +576,7 @@ class _CropScreenState extends ConsumerState<CropScreen>
                 if (q != null) setState(() => _quality = q);
               },
       ),
-      const Text('작은 원본은 해상도를 늘리지 않습니다. 기기 인코더가 지원하지 않으면 실패 원인을 안내합니다.'),
+      const Text('작은 원본은 출력 크기를 낮춥니다. 크롭한 영역은 출력 크기에 맞춰 확대될 수 있어요.'),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         title: const Text('원본 소리 유지'),

@@ -32,7 +32,7 @@ class ExportController extends ChangeNotifier {
   String? error, savedLocation;
   bool saving = false, _disposed = false, _cancelled = false;
   String? _id;
-  bool get busy => stage == ExportStage.rendering || saving;
+  bool get busy => _id != null || stage == ExportStage.rendering || saving;
 
   void _changed() {
     if (!_disposed) notifyListeners();
@@ -80,8 +80,17 @@ class ExportController extends ChangeNotifier {
             _changed();
             return;
           default:
-            progress = (status['progress'] as num?)?.toDouble().clamp(0, 1);
-            _changed();
+            // 같은 진행률로 화면 전체를 반복 갱신하지 않고 완료 확인 전에는 99%까지만 표시합니다.
+            final next =
+                (status['progress'] as num?)
+                    ?.toDouble()
+                    .clamp(0.0, .99)
+                    .toDouble() ??
+                progress;
+            if (next != progress) {
+              progress = next;
+              _changed();
+            }
         }
         await Future<void>.delayed(const Duration(milliseconds: 300));
       }
@@ -97,7 +106,10 @@ class ExportController extends ChangeNotifier {
       try {
         await service.release(id);
       } catch (_) {}
-      if (_id == id) _id = null;
+      if (_id == id) {
+        _id = null;
+        _changed();
+      }
       if (_cancelled && !_disposed) {
         stage = ExportStage.cancelled;
         _changed();
