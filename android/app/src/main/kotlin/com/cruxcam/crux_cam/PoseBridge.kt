@@ -18,6 +18,7 @@ import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
+import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
@@ -88,6 +89,20 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                 }
                 run(result) { session.analyze(time, call.argument<Boolean>("preview") == true) }
             }
+            "refine" -> {
+                val id = call.argument<String>("id")
+                val session = if (id == null) null else sessions[id]
+                val time = call.argument<Number>("timeMs")?.toLong()
+                val region = call.argument<List<Number>>("region")?.map { it.toDouble() }
+                if (session == null || time == null) {
+                    result.error("session", "분석 세션을 찾을 수 없습니다.", null); return
+                }
+                if (region == null || region.size != 4 || region.any { !it.isFinite() || it !in 0.0..1.0 } ||
+                    region[2] - region[0] < 0.05 || region[3] - region[1] < 0.05) {
+                    result.error("arguments", "다시 찾을 영역이 올바르지 않습니다.", null); return
+                }
+                run(result) { session.refine(time, region) }
+            }
             "close" -> {
                 val id = call.argument<String>("id")
                 val session = if (id == null) null else sessions[id]
@@ -146,6 +161,11 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
         private var firstFrame: Bitmap? = null
         private var landmarker: PoseLandmarker? = null
         private var mlKit: PoseDetector? = null
+        // MediaPipe가 등진 자세나 빠른 움직임에서 놓친 사람을 보충하는 보조 모델입니다.
+        private var assist: PoseDetector? = null
+        // 놓친 구간을 다시 찾을 때만 만드는 모델입니다. 시간 순서와 관계없이 한 장씩 분석합니다.
+        private var refineLandmarker: PoseLandmarker? = null
+        private var refineMlKit: PoseDetector? = null
         private var lastTime = -1L
 
         fun checkActive() { if (cancelled.get()) throw Cancelled() }
@@ -180,16 +200,55 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                     .build()
                 mlKit = PoseDetection.getClient(options)
             } else {
-                val model = if (engine == "mediapipe_lite") "pose_landmarker_lite.task" else "pose_landmarker_full.task"
-                val asset = FlutterInjector.instance().flutterLoader().getLookupKeyForAsset("assets/models/$model")
-                val options = PoseLandmarker.PoseLandmarkerOptions.builder()
-                    .setBaseOptions(BaseOptions.builder().setModelAssetPath(asset).setDelegate(Delegate.CPU).build())
-                    .setRunningMode(if (video && region == null) RunningMode.VIDEO else RunningMode.IMAGE)
-                    .setNumPoses(4).setMinPoseDetectionConfidence(0.5f)
-                    .setMinPosePresenceConfidence(0.5f).setMinTrackingConfidence(0.5f)
-                    .setOutputSegmentationMasks(false).build()
-                landmarker = PoseLandmarker.createFromOptions(context, options)
+                landmarker = createLandmarker(if (video && region == null) RunningMode.VIDEO else RunningMode.IMAGE)
+                // ML Kit는 한 사람만 찾지만 얼굴이 보이지 않는 등진 자세에서 더 잘 찾는 경우가 많습니다.
+                // 같은 프레임에 한 번 더 실행하는 비용은 영상 디코딩보다 작아 모든 프레임에 함께 실행합니다.
+                assist = PoseDetection.getClient(AccuratePoseDetectorOptions.Builder()
+                    .setDetectorMode(if (video && region == null) AccuratePoseDetectorOptions.STREAM_MODE else AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
+                    .build())
             }
+        }
+
+        private fun createLandmarker(mode: RunningMode, confidence: Float = 0.5f): PoseLandmarker {
+            val model = if (engine == "mediapipe_lite") "pose_landmarker_lite.task" else "pose_landmarker_full.task"
+            val asset = FlutterInjector.instance().flutterLoader().getLookupKeyForAsset("assets/models/$model")
+            val options = PoseLandmarker.PoseLandmarkerOptions.builder()
+                .setBaseOptions(BaseOptions.builder().setModelAssetPath(asset).setDelegate(Delegate.CPU).build())
+                .setRunningMode(mode)
+                .setNumPoses(4).setMinPoseDetectionConfidence(confidence)
+                .setMinPosePresenceConfidence(confidence).setMinTrackingConfidence(0.5f)
+                .setOutputSegmentationMasks(false).build()
+            return PoseLandmarker.createFromOptions(context, options)
+        }
+
+        /** 잘라낸 입력에서 찾은 좌표를 원본 전체 화면 기준 0~1 좌표로 되돌립니다. */
+        private fun mlKitPoses(detector: PoseDetector, input: Bitmap, left: Int, top: Int, frame: Bitmap): List<List<List<Float>>> {
+            val detection = Tasks.await(detector.process(InputImage.fromBitmap(input, 0)), 30, TimeUnit.SECONDS)
+            return if (detection.allPoseLandmarks.isEmpty()) emptyList() else listOf((0..32).map { i ->
+                val p = detection.getPoseLandmark(i)
+                if (p == null) listOf(0f, 0f, 0f, 0f) else listOf(
+                    (left + p.position.x) / frame.width, (top + p.position.y) / frame.height,
+                    p.position3D.z / frame.width, p.inFrameLikelihood)
+            })
+        }
+
+        private fun mediaPipePoses(detection: PoseLandmarkerResult, input: Bitmap, left: Int, top: Int,
+            frame: Bitmap): List<List<List<Float>>> =
+            detection.landmarks().map { points -> points.map { p ->
+                listOf((left + p.x() * input.width) / frame.width,
+                    (top + p.y() * input.height) / frame.height,
+                    p.z() * input.width / frame.width,
+                    minOf(p.visibility().orElse(0f), p.presence().orElse(1f)))
+            } }
+
+        /** 영역이 있으면 그 부분만 새 이미지로 잘라 내고, 원본 좌표로 되돌릴 왼쪽·위 위치를 함께 돌려줍니다. */
+        private fun crop(frame: Bitmap, area: List<Double>?): Triple<Bitmap, Int, Int> {
+            val left = area?.let { (it[0] * frame.width).toInt() } ?: 0
+            val top = area?.let { (it[1] * frame.height).toInt() } ?: 0
+            val right = area?.let { (it[2] * frame.width).roundToInt().coerceIn(left + 1, frame.width) } ?: frame.width
+            val bottom = area?.let { (it[3] * frame.height).roundToInt().coerceIn(top + 1, frame.height) } ?: frame.height
+            val input = if (area == null) frame else Bitmap.createBitmap(frame, left, top, right - left, bottom - top)
+            return Triple(input, left, top)
         }
 
         fun analyze(timeMs: Long, preview: Boolean): Map<String, Any> {
@@ -202,11 +261,7 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                 else readVideo(timeMs)
             } else photo ?: throw IllegalArgumentException("사진을 읽을 수 없습니다.")
             // 영역은 분석 입력에만 적용하며 결과 좌표는 원본 전체 화면으로 되돌립니다.
-            val left = region?.let { (it[0] * frame.width).toInt() } ?: 0
-            val top = region?.let { (it[1] * frame.height).toInt() } ?: 0
-            val right = region?.let { (it[2] * frame.width).roundToInt().coerceIn(left + 1, frame.width) } ?: frame.width
-            val bottom = region?.let { (it[3] * frame.height).roundToInt().coerceIn(top + 1, frame.height) } ?: frame.height
-            val input = if (region == null) frame else Bitmap.createBitmap(frame, left, top, right - left, bottom - top)
+            val (input, left, top) = crop(frame, region)
             var managedImage: MPImage? = null
             try {
                 checkActive()
@@ -216,38 +271,68 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
                     bytes.toByteArray()
                 } else null
                 val start = SystemClock.elapsedRealtimeNanos()
+                // 보조 모델은 MediaPipe가 입력 이미지를 정리하기 전에 먼저 실행합니다.
+                // 보조 모델이 실패해도 기본 분석 결과는 그대로 쓸 수 있게 빈 결과로 넘어갑니다.
+                val assistPoses = assist?.let { detector ->
+                    try { mlKitPoses(detector, input, left, top, frame) } catch (error: Exception) {
+                        android.util.Log.w("CruxPose", "보조 모델 실행 실패", error); emptyList()
+                    }
+                } ?: emptyList()
                 val poses: List<List<List<Float>>> = if (engine == "mlkit_accurate") {
-                    val detection = Tasks.await(mlKit!!.process(InputImage.fromBitmap(input, 0)), 30, TimeUnit.SECONDS)
-                    if (detection.allPoseLandmarks.isEmpty()) emptyList() else listOf((0..32).map { i ->
-                        val p = detection.getPoseLandmark(i)
-                        if (p == null) listOf(0f, 0f, 0f, 0f) else listOf(
-                            (left + p.position.x) / frame.width, (top + p.position.y) / frame.height,
-                            p.position3D.z / frame.width, p.inFrameLikelihood)
-                    })
+                    mlKitPoses(mlKit!!, input, left, top, frame)
                 } else {
                     val image = BitmapImageBuilder(input).build()
                     managedImage = image
-                    run {
-                        val detection = if (video && region == null) landmarker!!.detectForVideo(image, timeMs) else landmarker!!.detect(image)
-                        detection.landmarks().map { points -> points.map { p ->
-                            listOf((left + p.x() * input.width) / frame.width,
-                                (top + p.y() * input.height) / frame.height,
-                                p.z() * input.width / frame.width,
-                                minOf(p.visibility().orElse(0f), p.presence().orElse(1f)))
-                        } }
-                    }
+                    val detection = if (video && region == null) landmarker!!.detectForVideo(image, timeMs) else landmarker!!.detect(image)
+                    mediaPipePoses(detection, input, left, top, frame)
                 }
                 val inferenceMs = (SystemClock.elapsedRealtimeNanos() - start) / 1000000.0
                 checkActive()
                 lastTime = timeMs
                 val output = mutableMapOf<String, Any>("timeMs" to timeMs, "poses" to poses, "inferenceMs" to inferenceMs,
-                    "appearances" to poses.map { torsoColors(frame, it) })
+                    "appearances" to poses.map { torsoColors(frame, it) },
+                    // 중복 제거와 채택은 Flutter에서 기본 결과와 비교해 결정합니다.
+                    "assistPoses" to assistPoses, "assistAppearances" to assistPoses.map { torsoColors(frame, it) })
                 if (previewBytes != null) output["preview"] = previewBytes
                 return output
             } finally {
                 managedImage?.close()
                 if (input !== frame && !input.isRecycled) input.recycle()
                 if (video && !frame.isRecycled) frame.recycle()
+            }
+        }
+
+        /**
+         * 놓친 프레임에서 예상 위치 주변만 잘라 크게 만든 뒤 두 모델로 다시 찾습니다.
+         * 작은 사람이 크게 보여 검출이 쉬워집니다. 어떤 결과를 같은 사람으로 받을지는 Flutter가 정합니다.
+         * 기본 분석과 다른 모델 객체를 써서 VIDEO 모드의 연속 추적 상태를 건드리지 않습니다.
+         */
+        fun refine(timeMs: Long, area: List<Double>): Map<String, Any> {
+            checkActive()
+            require(video && timeMs in 0 until durationMs) { "다시 찾을 시점이 영상 범위를 벗어났습니다." }
+            val frame = readVideo(timeMs)
+            val (input, left, top) = crop(frame, area)
+            var managedImage: MPImage? = null
+            try {
+                checkActive()
+                val detector = refineMlKit ?: PoseDetection.getClient(AccuratePoseDetectorOptions.Builder()
+                    .setDetectorMode(AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE).build()).also { refineMlKit = it }
+                val mlKitResult = try { mlKitPoses(detector, input, left, top, frame) } catch (error: Exception) {
+                    android.util.Log.w("CruxPose", "다시 찾기 보조 모델 실패", error); emptyList()
+                }
+                checkActive()
+                // 확대 영역 안의 결과는 Flutter에서 위치·몸 크기·옷 색으로 한 번 더 거르므로
+                // 기본 분석보다 낮은 기준을 써서 흐릿한 등진 자세도 후보로 받아 봅니다.
+                val model = refineLandmarker ?: createLandmarker(RunningMode.IMAGE, 0.3f).also { refineLandmarker = it }
+                val image = BitmapImageBuilder(input).build()
+                managedImage = image
+                val poses = mediaPipePoses(model.detect(image), input, left, top, frame) + mlKitResult
+                checkActive()
+                return mapOf("timeMs" to timeMs, "poses" to poses, "appearances" to poses.map { torsoColors(frame, it) })
+            } finally {
+                managedImage?.close()
+                if (input !== frame && !input.isRecycled) input.recycle()
+                if (!frame.isRecycled) frame.recycle()
             }
         }
 
@@ -266,11 +351,17 @@ class PoseBridge(private val context: Context, messenger: BinaryMessenger) : Met
             // 같은 세션에 취소와 종료가 동시에 와도 두 번 해제하지 않게 참조를 비웁니다.
             val model = landmarker; landmarker = null
             val detector = mlKit; mlKit = null
+            val helper = assist; assist = null
+            val refineModel = refineLandmarker; refineLandmarker = null
+            val refineDetector = refineMlKit; refineMlKit = null
             val decoder = retriever; retriever = null
             val image = photo; photo = null
             val first = firstFrame; firstFrame = null
             runCatching { model?.close() }
             runCatching { detector?.close() }
+            runCatching { helper?.close() }
+            runCatching { refineModel?.close() }
+            runCatching { refineDetector?.close() }
             runCatching { decoder?.release() }
             if (image != null && !image.isRecycled) image.recycle()
             if (first != null && !first.isRecycled) first.recycle()

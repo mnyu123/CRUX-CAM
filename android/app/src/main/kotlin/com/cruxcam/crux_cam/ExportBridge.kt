@@ -44,7 +44,7 @@ class ExportBridge(private val activity: Activity, messenger: BinaryMessenger) :
         var error: String? = null
         var metadata: Map<String, Any>? = null
     }
-    private data class Frame(val time: Long, val rect: DoubleArray, val following: Boolean)
+    private data class Frame(val time: Long, val rect: DoubleArray)
 
     init {
         // 비정상 종료 때 남은 우리 작업 파일만 제거하고 완료된 영상은 보관합니다.
@@ -103,6 +103,8 @@ class ExportBridge(private val activity: Activity, messenger: BinaryMessenger) :
                     require(duration in 1..600_000) { "10분 이하의 영상을 선택해주세요." }
                     Triple(if (rotation % 180 == 0) w else h, if (rotation % 180 == 0) h else w, duration)
                 } finally { retriever.release() }
+                // 소리 유지를 요청했고 원본에 소리가 있으면, 결과에도 소리가 있는지 완료 때 확인합니다.
+                val requireAudio = settings["keepAudio"] == true && hasAudioTrack(path)
                 val requested = (settings["shortSide"] as Number).toInt()
                 require(requested == 720 || requested == 1080) { "출력 해상도가 올바르지 않습니다." }
                 val shortSide = min(requested, min(source.first, source.second)).toDouble()
@@ -134,6 +136,10 @@ class ExportBridge(private val activity: Activity, messenger: BinaryMessenger) :
                                     worker.execute {
                                         try {
                                             val metadata = inspect(job.partial)
+                                            // 소리가 빠진 영상을 성공으로 처리하지 않고 다시 시도하도록 안내합니다.
+                                            check(!requireAudio || metadata["hasAudio"] == true) {
+                                                "결과 영상에 원본 소리를 넣지 못했습니다. 다시 내보내 주세요. 계속되면 앱을 다시 시작한 뒤 시도해주세요."
+                                            }
                                             synchronized(job) {
                                                 if (job.cancelled.get()) return@execute
                                                 check(job.partial.renameTo(job.output)) { "완료된 파일을 저장하지 못했습니다." }
@@ -176,7 +182,7 @@ class ExportBridge(private val activity: Activity, messenger: BinaryMessenger) :
                 rect[0] >= 0 && rect[1] >= 0 && rect[2] > 0 && rect[3] > 0 &&
                 rect[0] + rect[2] <= 1.000001 && rect[1] + rect[3] <= 1.000001) { "크롭 경로가 올바르지 않습니다." }
             previous = time
-            Frame(time, rect, map["status"] == "following")
+            Frame(time, rect)
         }
     }
 
@@ -187,7 +193,8 @@ class ExportBridge(private val activity: Activity, messenger: BinaryMessenger) :
             var low = 0; var high = frames.lastIndex
             while (low < high) { val mid = (low + high + 1) / 2; if (frames[mid].time <= time) low = mid else high = mid - 1 }
             val a = frames[low]; val b = frames.getOrNull(low + 1)
-            val fraction = if (b != null && a.following && b.following)
+            // 놓친 구간도 Flutter에서 미리 경로를 계산해 보내므로 미리보기와 같이 항상 프레임 사이를 잇습니다.
+            val fraction = if (b != null)
                 ((time - a.time).toDouble() / (b.time - a.time)).coerceIn(0.0, 1.0) else 0.0
             val r = DoubleArray(4) { a.rect[it] + ((b?.rect?.get(it) ?: a.rect[it]) - a.rect[it]) * fraction }
             // 화면 좌표는 아래로 증가하고 OpenGL 좌표는 위로 증가하므로 세로 이동의 부호를 바꿉니다.
@@ -198,6 +205,19 @@ class ExportBridge(private val activity: Activity, messenger: BinaryMessenger) :
             matrix[13] = ((2 * r[1] + r[3] - 1) / r[3]).toFloat()
             return matrix
         }
+    }
+
+    private fun hasAudioTrack(path: String): Boolean {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(path)
+            (0 until extractor.trackCount).any {
+                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+            }
+        } catch (e: Exception) {
+            // 원본의 소리 여부를 읽지 못하면 확인을 생략하고 기존처럼 변환합니다.
+            false
+        } finally { extractor.release() }
     }
 
     private fun inspect(file: File): Map<String, Any> {

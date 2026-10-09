@@ -29,6 +29,9 @@ class FakePoseService implements PoseService {
   Completer<PoseFrame>? pendingFrame;
   int calls = 0;
   PoseRegion? region;
+
+  /// 시점별로 다른 감지 결과가 필요할 때 지정합니다. null을 돌려주면 기본 결과를 씁니다.
+  List<PoseBody>? Function(int timeMs)? onFrame;
   @override
   Future<List<PoseEngine>> engines() async => [
     PoseEngine.mediaPipeFull,
@@ -56,9 +59,25 @@ class FakePoseService implements PoseService {
   Future<PoseFrame> frame(String id, int timeMs, {bool preview = false}) async {
     calls++;
     if (pendingFrame != null) return pendingFrame!.future;
+    final custom = onFrame?.call(timeMs);
+    if (custom != null) return poseFrame(timeMs, custom);
     return poseFrame(timeMs, [
       bodyAt((region == null ? 0.3 : 0.7) + timeMs * 0.0001),
     ]);
+  }
+
+  /// 다시 찾기 요청 기록과, 요청마다 돌려줄 결과입니다. 기본은 아무도 찾지 못한 결과입니다.
+  final List<({int timeMs, PoseRegion region})> refines = [];
+  FutureOr<List<PoseBody>> Function(int timeMs, PoseRegion region)? onRefine;
+
+  @override
+  Future<List<PoseBody>> refine(
+    String id,
+    int timeMs,
+    PoseRegion region,
+  ) async {
+    refines.add((timeMs: timeMs, region: region));
+    return await onRefine?.call(timeMs, region) ?? const [];
   }
 
   @override

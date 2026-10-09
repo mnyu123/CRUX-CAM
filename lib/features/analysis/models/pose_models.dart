@@ -112,6 +112,24 @@ class PoseBody {
     return math.max(b.right - b.left, b.bottom - b.top).clamp(0.05, 2);
   }
 
+  /// 두 모델이 같은 사람을 각각 찾은 결과인지 판단합니다.
+  /// 일부만 겹친 잘못된 보조 결과도 기존 사람 옆의 새 후보로 만들지 않도록 넉넉하게 같다고 봅니다.
+  bool overlaps(PoseBody other) {
+    if (!usable || !other.usable) return false;
+    final a = center, b = other.center;
+    final distance = math.sqrt(math.pow(a.x - b.x, 2) + math.pow(a.y - b.y, 2));
+    if (distance < math.max(.08, math.min(span, other.span) * .5)) return true;
+    final x = bounds, y = other.bounds;
+    final intersection =
+        math.max(0.0, math.min(x.right, y.right) - math.max(x.left, y.left)) *
+        math.max(0.0, math.min(x.bottom, y.bottom) - math.max(x.top, y.top));
+    final union =
+        (x.right - x.left) * (x.bottom - x.top) +
+        (y.right - y.left) * (y.bottom - y.top) -
+        intersection;
+    return union > 0 && intersection / union > .2;
+  }
+
   List<List<double>> toJson() => points.map((p) => p.toJson()).toList();
   factory PoseBody.fromList(
     List<dynamic> values, {
@@ -138,24 +156,38 @@ class PoseFrame {
   int? personIdAt(int index) =>
       index < personIds.length ? personIds[index] : null;
   factory PoseFrame.fromMap(Map<dynamic, dynamic> data) {
-    final poses = data['poses'] as List<dynamic>;
-    final appearances = data['appearances'] as List<dynamic>?;
+    final bodies = parseBodies(data['poses'], data['appearances']);
+    // 보조 모델 결과는 기본 모델이 찾지 못한 사람일 때만 후보로 더합니다.
+    // 이미 찾은 사람과 겹치면 버려서 같은 사람이 두 번 잡히지 않게 합니다.
+    for (final extra in parseBodies(
+      data['assistPoses'],
+      data['assistAppearances'],
+    )) {
+      if (extra.usable && !bodies.any((b) => b.overlaps(extra))) {
+        bodies.add(extra);
+      }
+    }
     return PoseFrame(
       timeMs: (data['timeMs'] as num).toInt(),
-      bodies: List.unmodifiable(
-        List.generate(
-          poses.length,
-          (i) => PoseBody.fromList(
-            poses[i] as List<dynamic>,
-            appearance: appearances != null && i < appearances.length
-                ? appearances[i] as List<dynamic>?
-                : null,
-          ),
-        ),
-      ),
+      bodies: List.unmodifiable(bodies),
       inferenceMs: (data['inferenceMs'] as num).toDouble(),
       preview: data['preview'] as Uint8List?,
     );
+  }
+
+  /// OS가 보낸 관절 목록과 옷 색 목록을 몸 단위로 묶습니다.
+  static List<PoseBody> parseBodies(Object? poses, Object? appearances) {
+    final list = poses as List<dynamic>? ?? const [];
+    final colors = appearances as List<dynamic>?;
+    return [
+      for (var i = 0; i < list.length; i++)
+        PoseBody.fromList(
+          list[i] as List<dynamic>,
+          appearance: colors != null && i < colors.length
+              ? colors[i] as List<dynamic>?
+              : null,
+        ),
+    ];
   }
 }
 
@@ -239,6 +271,16 @@ class AnalysisResult {
         selectedPersonId: frames[indexAt(time)].personIdAt(index),
         regions: regions,
       );
+
+  /// 사람 선택을 해제한 결과. 감지 후보·번호·추가 분석 영역은 유지합니다.
+  AnalysisResult withoutTracking() => AnalysisResult(
+    session: session,
+    engine: engine,
+    intervalMs: intervalMs,
+    frames: frames,
+    elapsedMs: elapsedMs,
+    regions: regions,
+  );
 
   int indexAt(int timeMs) {
     // 시간을 탐색할 때 전체 결과를 매번 순회하지 않고 이진 탐색으로 찾습니다.

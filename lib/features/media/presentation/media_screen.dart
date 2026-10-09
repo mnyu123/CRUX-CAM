@@ -353,12 +353,19 @@ class _VideoControls extends StatelessWidget {
                 0,
                 total > 0 ? total : 1,
               ),
+              // 누르거나 끄는 동안 잠시 멈췄다가 손을 떼면 원래 재생 상태로 되돌립니다.
+              onChangeStart: enabled && total > 0 && !value.hasError
+                  ? (_) => unawaited(controller.beginScrub())
+                  : null,
               onChanged: enabled && total > 0 && !value.hasError
                   ? (milliseconds) => unawaited(
                       controller.seekTo(
                         Duration(milliseconds: milliseconds.round()),
                       ),
                     )
+                  : null,
+              onChangeEnd: enabled && total > 0 && !value.hasError
+                  ? (_) => unawaited(controller.endScrub())
                   : null,
             ),
           ],

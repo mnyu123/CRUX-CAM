@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../core/media/media_service.dart';
+import '../../../core/media/playback_scrubber.dart';
 import '../../../core/reframing/crop_planner.dart';
 import '../../analysis/models/pose_models.dart';
 import '../../media/models/media_info.dart';
@@ -191,10 +192,37 @@ class _CropScreenState extends ConsumerState<CropScreen>
   }
 
   Future<void> _seek(int ms) async {
+    final player = _player;
+    if (player == null) return;
     try {
-      await _player?.seekTo(Duration(milliseconds: ms));
+      // 연속 탐색이 겹치면 소리가 깨질 수 있어 마지막 위치만 차례로 보냅니다.
+      await PlaybackScrubber.of(player).seek(Duration(milliseconds: ms));
     } catch (_) {
       if (mounted) setState(() => _playerError = '이 시점으로 이동하지 못했습니다.');
+    }
+  }
+
+  Future<void> _scrubStart() async {
+    final player = _player;
+    if (player == null || !player.value.isInitialized) return;
+    try {
+      await PlaybackScrubber.of(player).start();
+    } catch (_) {}
+  }
+
+  Future<void> _scrubEnd() async {
+    final player = _player;
+    if (player == null) return;
+    try {
+      // 내보내기가 시작됐거나 앱이 가려졌다면 다시 재생하지 않습니다.
+      await PlaybackScrubber.of(player).end(
+        canResume: () =>
+            mounted &&
+            !_export.busy &&
+            WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+      );
+    } catch (_) {
+      if (mounted) setState(() => _playerError = '재생 상태를 바꾸지 못했습니다.');
     }
   }
 
@@ -390,9 +418,16 @@ class _CropScreenState extends ConsumerState<CropScreen>
                                             .toDouble(),
                                       ),
                                     ),
+                                    // 누르거나 끄는 동안 잠시 멈췄다가 손을 떼면 원래 재생 상태로 되돌립니다.
+                                    onChangeStart: _export.busy
+                                        ? null
+                                        : (_) => unawaited(_scrubStart()),
                                     onChanged: _export.busy
                                         ? null
                                         : (v) => unawaited(_seek(v.round())),
+                                    onChangeEnd: _export.busy
+                                        ? null
+                                        : (_) => unawaited(_scrubEnd()),
                                   ),
                                 ),
                                 Text(
@@ -434,6 +469,8 @@ class _CropScreenState extends ConsumerState<CropScreen>
                         if (frame != null)
                           Text(switch (frame.status) {
                             CropStatus.following => '선택한 사람을 따라가고 있습니다.',
+                            CropStatus.bridged =>
+                              '잠시 놓친 구간입니다. 앞뒤로 찾은 위치를 이어서 보여줍니다.',
                             CropStatus.held =>
                               '대상을 놓친 구간입니다. 마지막 크롭 위치를 유지합니다.',
                             CropStatus.waiting => '대상이 감지될 때까지 넓은 영역을 표시합니다.',

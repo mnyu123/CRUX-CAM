@@ -90,6 +90,20 @@ void main() {
         find.byKey(const Key('pose-preview')).hitTestable(),
         findsOneWidget,
       );
+      // 사람을 고르기 전에는 다음 단계로 가는 방법을 알림·제목·안내 카드로 보여줍니다.
+      expect(find.textContaining('분석이 끝났어요'), findsOneWidget);
+      expect(find.text('클라이머 번호를 눌러 선택하세요'), findsOneWidget);
+      expect(find.byKey(const Key('select-person-hint')), findsOneWidget);
+      expect(find.byKey(const Key('open-crop')), findsNothing);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('crop-needs-person')));
+      await tester.tap(find.byKey(const Key('crop-needs-person')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('먼저 영상 아래의 사람 번호를 눌러'), findsOneWidget);
+      // 알림이 아래쪽 버튼을 가리지 않도록 닫힐 때까지 기다립니다.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('사람 1'));
       await tester.tap(find.text('사람 1'));
       await tester.pump();
@@ -151,6 +165,10 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(pose.region, isNotNull);
+      // 추가 분석 뒤에는 번호가 다시 정리되므로 대상을 다시 고르라고 안내합니다.
+      expect(find.textContaining('분석이 끝났어요'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
       expect(find.text('사람 1'), findsOneWidget);
       expect(find.text('사람 2'), findsOneWidget);
       expect(
@@ -158,6 +176,36 @@ void main() {
         lessThan(tester.getRect(find.text('사람 2')).left),
       );
       await tester.ensureVisible(find.text('사람 2'));
+      await tester.tap(find.text('사람 2'));
+      await tester.pump();
+      await tester.runAsync(() async {
+        for (
+          var i = 0;
+          i < 100 && container.read(analysisControllerProvider).busy;
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
+      await tester.pumpAndSettle();
+      expect(
+        container.read(analysisControllerProvider).result!.selectedPersonId,
+        2,
+      );
+      // 이미 선택한 사람 번호를 다시 누르면 선택이 해제되고 크롭 버튼이 사라집니다.
+      await tester.ensureVisible(find.text('사람 2'));
+      await tester.tap(find.text('사람 2'));
+      await tester.pumpAndSettle();
+      expect(
+        container.read(analysisControllerProvider).result!.selectedPersonId,
+        isNull,
+      );
+      expect(find.text('클라이머 번호를 눌러 선택하세요'), findsOneWidget);
+      expect(find.byKey(const Key('open-crop')), findsNothing);
+      expect(find.byKey(const Key('crop-needs-person')), findsOneWidget);
+      expect(find.text('사람 1'), findsOneWidget);
+      expect(find.text('사람 2'), findsOneWidget);
+      // 해제한 뒤 다시 누르면 같은 사람을 다시 선택할 수 있습니다.
       await tester.tap(find.text('사람 2'));
       await tester.pump();
       await tester.runAsync(() async {

@@ -252,6 +252,19 @@ class PersonCatalog {
   }
 }
 
+/// 두 옷 색 분포의 차이입니다. 0이면 같고 1에 가까울수록 다릅니다. 정보가 없으면 null입니다.
+double? appearanceDistance(List<double>? a, List<double>? b) {
+  if (a == null || b == null || a.length != b.length) return null;
+  final sumA = a.fold<double>(0, (v, x) => v + x);
+  final sumB = b.fold<double>(0, (v, x) => v + x);
+  if (sumA <= 0 || sumB <= 0) return null;
+  var similarity = 0.0;
+  for (var i = 0; i < a.length; i++) {
+    similarity += math.sqrt(a[i] / sumA * b[i] / sumB);
+  }
+  return math.sqrt(math.max(0, 1 - similarity.clamp(0, 1)));
+}
+
 class _Identity {
   _Identity(this.body, this.time)
     : colors = body.appearance,
@@ -263,19 +276,9 @@ class _Identity {
   final List<double>? firstColors;
   double? colorDistance(List<double>? value) {
     if (value == null || colors == null) return null;
-    double distance(List<double> profile) {
-      final sumA = profile.fold<double>(0, (a, b) => a + b);
-      final sumB = value.fold<double>(0, (a, b) => a + b);
-      var similarity = 0.0;
-      for (var i = 0; i < profile.length; i++) {
-        similarity += math.sqrt(profile[i] / sumA * value[i] / sumB);
-      }
-      return math.sqrt(math.max(0, 1 - similarity.clamp(0, 1)));
-    }
-
     return math.min(
-      distance(colors!),
-      firstColors == null ? 1 : distance(firstColors!),
+      appearanceDistance(colors, value)!,
+      appearanceDistance(firstColors, value) ?? 1,
     );
   }
 
