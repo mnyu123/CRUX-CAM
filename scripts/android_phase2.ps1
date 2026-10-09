@@ -3,7 +3,9 @@
     [string]$Action = 'build',
     [string]$DeviceId,
     [string]$VideoPath,
-    [string]$LocalVideoPath
+    [string]$LocalVideoPath,
+    [ValidateSet('pose', 'export')]
+    [string]$Suite = 'pose'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +20,7 @@ $env:JAVA_TOOL_OPTIONS = '-Djava.io.tmpdir="' + $javaTemp + '" -Djdk.net.unixdom
 Push-Location -LiteralPath $projectRoot
 try {
     if (-not [string]::IsNullOrWhiteSpace($LocalVideoPath)) {
+        if ($Suite -eq 'export') { throw 'export 테스트는 합성 영상을 사용하므로 LocalVideoPath를 받지 않습니다.' }
         if ($Action -notin @('integration', 'visual')) { throw 'LocalVideoPath는 integration 또는 visual에서만 사용합니다.' }
         $sourceVideo = (Resolve-Path -LiteralPath $LocalVideoPath).Path
         $fixturePath = Join-Path $projectRoot 'build\phase2-fixtures\climbing.mp4'
@@ -38,10 +41,11 @@ try {
         'build' { & flutter build apk --debug --no-pub }
         'run' { & flutter run -d $DeviceId --no-pub }
         { $_ -in @('integration', 'visual') } {
+            $testTarget = if ($Suite -eq 'export') { 'integration_test/export_test.dart' } else { 'integration_test/pose_analysis_test.dart' }
             $testArgs = if ($Action -eq 'visual') {
-                @('drive', '--driver=test_driver/pose_driver.dart', '--target=integration_test/pose_analysis_test.dart', '-d', $DeviceId, '--no-pub', '--dart-define=CRUX_TEST_UI_ONLY=true')
+                @('drive', '--driver=test_driver/pose_driver.dart', "--target=$testTarget", '-d', $DeviceId, '--no-pub', '--dart-define=CRUX_TEST_UI_ONLY=true')
             } else {
-                @('test', 'integration_test/pose_analysis_test.dart', '-d', $DeviceId, '--no-pub')
+                @('test', $testTarget, '-d', $DeviceId, '--no-pub')
             }
             # 경로는 PC 경로가 아니라 테스트 앱이 읽을 수 있는 기기 내부 파일 경로입니다.
             if (-not [string]::IsNullOrWhiteSpace($VideoPath)) {

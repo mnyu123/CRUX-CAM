@@ -53,4 +53,7 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:1.0.0")
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
     implementation("androidx.exifinterface:exifinterface:1.4.2")
+    // 재생 플러그인과 같은 버전을 사용해 영상 처리 라이브러리가 섞이지 않게 합니다.
+    implementation("androidx.media3:media3-transformer:1.9.2")
+    implementation("androidx.media3:media3-effect:1.9.2")
 }

@@ -15,6 +15,10 @@ abstract class PoseService {
     PoseRegion? region,
   });
   Future<PoseFrame> frame(String id, int timeMs, {bool preview = false});
+
+  /// 열린 영상 세션에서 한 시점의 지정 영역만 확대해 다시 찾습니다.
+  /// 기본 분석과 달리 시간 순서와 관계없이 요청할 수 있으며, 좌표는 원본 전체 화면 기준입니다.
+  Future<List<PoseBody>> refine(String id, int timeMs, PoseRegion region);
   Future<void> close(String id);
 }
 
@@ -64,6 +68,21 @@ class NativePoseService implements PoseService {
     });
     if (data == null) throw const FormatException('프레임 분석 결과가 없습니다.');
     return PoseFrame.fromMap(data);
+  }
+
+  @override
+  Future<List<PoseBody>> refine(
+    String id,
+    int timeMs,
+    PoseRegion region,
+  ) async {
+    final data = await channel.invokeMapMethod<String, dynamic>('refine', {
+      'id': id,
+      'timeMs': timeMs,
+      'region': region.toJson(),
+    });
+    if (data == null) return const [];
+    return PoseFrame.parseBodies(data['poses'], data['appearances']);
   }
 
   @override

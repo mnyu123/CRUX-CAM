@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:crux_cam/app/app.dart';
@@ -6,6 +7,7 @@ import 'package:crux_cam/core/media/media_service.dart';
 import 'package:crux_cam/core/pose/pose_service.dart';
 import 'package:crux_cam/features/analysis/application/analysis_controller.dart';
 import 'package:crux_cam/features/analysis/models/pose_models.dart';
+import 'package:crux_cam/features/export/application/export_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,6 +15,7 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
 
 import 'support/fake_media.dart';
 import 'support/fake_pose.dart';
+import 'support/fake_export.dart';
 
 void main() {
   testWidgets('설정을 스크롤해도 영상과 사람 선택이 함께 보이고 대상 변경·화면 종료가 정상 동작한다', (
@@ -20,6 +23,7 @@ void main() {
   ) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
+    final semantics = tester.ensureSemantics();
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final directory = (await tester.runAsync(
@@ -28,11 +32,13 @@ void main() {
     final media = FakeMediaService()..next = videoSource;
     final pose = FakePoseService(directory: directory.path);
     final platform = FakeVideoPlatform();
+    final export = FakeExportService();
     VideoPlayerPlatform.instance = platform;
     final container = ProviderContainer(
       overrides: [
         mediaServiceProvider.overrideWithValue(media),
         poseServiceProvider.overrideWithValue(pose),
+        exportServiceProvider.overrideWithValue(export),
       ],
     );
     try {
@@ -84,6 +90,20 @@ void main() {
         find.byKey(const Key('pose-preview')).hitTestable(),
         findsOneWidget,
       );
+      // 사람을 고르기 전에는 다음 단계로 가는 방법을 알림·제목·안내 카드로 보여줍니다.
+      expect(find.textContaining('분석이 끝났어요'), findsOneWidget);
+      expect(find.text('클라이머 번호를 눌러 선택하세요'), findsOneWidget);
+      expect(find.byKey(const Key('select-person-hint')), findsOneWidget);
+      expect(find.byKey(const Key('open-crop')), findsNothing);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('crop-needs-person')));
+      await tester.tap(find.byKey(const Key('crop-needs-person')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('먼저 영상 아래의 사람 번호를 눌러'), findsOneWidget);
+      // 알림이 아래쪽 버튼을 가리지 않도록 닫힐 때까지 기다립니다.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('사람 1'));
       await tester.tap(find.text('사람 1'));
       await tester.pump();
@@ -145,6 +165,10 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(pose.region, isNotNull);
+      // 추가 분석 뒤에는 번호가 다시 정리되므로 대상을 다시 고르라고 안내합니다.
+      expect(find.textContaining('분석이 끝났어요'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
       expect(find.text('사람 1'), findsOneWidget);
       expect(find.text('사람 2'), findsOneWidget);
       expect(
@@ -152,6 +176,36 @@ void main() {
         lessThan(tester.getRect(find.text('사람 2')).left),
       );
       await tester.ensureVisible(find.text('사람 2'));
+      await tester.tap(find.text('사람 2'));
+      await tester.pump();
+      await tester.runAsync(() async {
+        for (
+          var i = 0;
+          i < 100 && container.read(analysisControllerProvider).busy;
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
+      await tester.pumpAndSettle();
+      expect(
+        container.read(analysisControllerProvider).result!.selectedPersonId,
+        2,
+      );
+      // 이미 선택한 사람 번호를 다시 누르면 선택이 해제되고 크롭 버튼이 사라집니다.
+      await tester.ensureVisible(find.text('사람 2'));
+      await tester.tap(find.text('사람 2'));
+      await tester.pumpAndSettle();
+      expect(
+        container.read(analysisControllerProvider).result!.selectedPersonId,
+        isNull,
+      );
+      expect(find.text('클라이머 번호를 눌러 선택하세요'), findsOneWidget);
+      expect(find.byKey(const Key('open-crop')), findsNothing);
+      expect(find.byKey(const Key('crop-needs-person')), findsOneWidget);
+      expect(find.text('사람 1'), findsOneWidget);
+      expect(find.text('사람 2'), findsOneWidget);
+      // 해제한 뒤 다시 누르면 같은 사람을 다시 선택할 수 있습니다.
       await tester.tap(find.text('사람 2'));
       await tester.pump();
       await tester.runAsync(() async {
@@ -200,6 +254,26 @@ void main() {
       expect(find.text('크롭 미리보기'), findsOneWidget);
       expect(find.byKey(const Key('crop-preview')), findsOneWidget);
       expect(find.byKey(const Key('crop-play')).hitTestable(), findsOneWidget);
+      expect(find.byKey(const Key('crop-zoom')).hitTestable(), findsOneWidget);
+      await tester.tap(find.text('원본에서 영역 보기'));
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byKey(const Key('crop-drag')),
+        const Offset(25, -20),
+      );
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 500)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('crop-reset')));
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 500)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('크롭').last);
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.byKey(const Key('crop-ratio')));
       await tester.tap(find.byKey(const Key('crop-ratio')));
       await tester.pumpAndSettle();
@@ -234,6 +308,47 @@ void main() {
       expect(savedCrop['personId'], 2);
       expect(savedCrop['options']['ratio'], 'square');
       expect(savedCrop['frames'], hasLength(5));
+      expect(savedCrop['options']['offsetX'], 0);
+      expect(savedCrop['options']['offsetY'], 0);
+      await tester.ensureVisible(find.byKey(const Key('export-video')));
+      export.opening = Completer<void>();
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('export-video')));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const Key('cancel-export')), findsOneWidget);
+      expect(
+        tester.widget<Slider>(find.byKey(const Key('crop-zoom'))).onChanged,
+        isNull,
+      );
+      await tester.runAsync(() async {
+        export.opening!.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      await tester.pumpAndSettle();
+      expect(export.request, isNotNull);
+      expect(find.textContaining('MP4 생성 완료'), findsOneWidget);
+      expect(find.text('저장 완료'), findsOneWidget);
+      for (final size in [const Size(390, 600), const Size(844, 390)]) {
+        tester.view.physicalSize = size;
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('crop-zoom')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('crop-play')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('crop-preview')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      }
+      tester.view.physicalSize = const Size(390, 844);
+      await tester.pumpAndSettle();
       Navigator.of(tester.element(find.text('크롭 미리보기'))).pop();
       await tester.pumpAndSettle();
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
@@ -248,6 +363,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
     } finally {
+      semantics.dispose();
       container.dispose();
       await tester.runAsync(() => directory.delete(recursive: true));
     }

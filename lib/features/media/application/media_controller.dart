@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../core/media/media_service.dart';
+import '../../../core/media/playback_scrubber.dart';
 import '../models/media_info.dart';
 
 final mediaControllerProvider =
@@ -206,7 +207,48 @@ class MediaController extends Notifier<MediaState> {
       return;
     }
     try {
-      await player.seekTo(position);
+      // 연속 탐색이 겹치면 소리가 깨질 수 있어 마지막 위치만 차례로 보냅니다.
+      await PlaybackScrubber.of(player).seek(position);
+    } catch (error) {
+      if (ref.mounted && state.videoController == player) {
+        state = MediaState(
+          info: state.info,
+          videoController: player,
+          isLoading: state.isLoading,
+          error: _errorMessage(error),
+        );
+      }
+    }
+  }
+
+  /// 재생 바 조작 시작. 재생 중이었다면 조작하는 동안 잠시 멈춥니다.
+  Future<void> beginScrub() async {
+    final player = state.videoController;
+    if (state.isLoading ||
+        player == null ||
+        player.value.hasError ||
+        !player.value.isInitialized) {
+      return;
+    }
+    try {
+      await PlaybackScrubber.of(player).start();
+    } catch (_) {
+      // 멈추지 못해도 탐색 자체는 계속할 수 있습니다.
+    }
+  }
+
+  /// 재생 바 조작 끝. 화면이 보이고 같은 파일일 때만 원래대로 다시 재생합니다.
+  Future<void> endScrub() async {
+    final player = state.videoController;
+    if (player == null) return;
+    try {
+      await PlaybackScrubber.of(player).end(
+        canResume: () =>
+            ref.mounted &&
+            !state.isLoading &&
+            state.videoController == player &&
+            _foreground,
+      );
     } catch (error) {
       if (ref.mounted && state.videoController == player) {
         state = MediaState(

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/pose/analysis_store.dart';
 import '../../../core/pose/pose_service.dart';
+import '../../../core/tracking/gap_filler.dart';
 import '../../../core/tracking/subject_tracker.dart';
 import '../../../core/tracking/person_catalog.dart';
 import '../../media/models/media_info.dart';
@@ -21,6 +22,7 @@ enum AnalysisPhase {
   idle,
   preparing,
   analyzing,
+  refining,
   tracking,
   cancelling,
   ready,
@@ -50,6 +52,7 @@ class AnalysisState {
   bool get busy => [
     AnalysisPhase.preparing,
     AnalysisPhase.analyzing,
+    AnalysisPhase.refining,
     AnalysisPhase.tracking,
     AnalysisPhase.cancelling,
   ].contains(phase);
@@ -174,11 +177,31 @@ class AnalysisController extends Notifier<AnalysisState> {
         frames,
       ));
       if (!active() || _cancelled) return;
+      // 추가 영역 분석에서는 이전에 이미 다시 찾아본 사람을 반복하지 않고 새 번호만 확인합니다.
+      final firstNewId = previous == null
+          ? 1
+          : previous.frames.fold<int>(
+                  0,
+                  (n, f) =>
+                      f.personIds.fold<int>(n, (v, id) => math.max(v, id ?? 0)),
+                ) +
+                1;
+      final filled = info.source.type == MediaType.video
+          ? await _fillGaps(
+              id,
+              session,
+              catalogued,
+              firstNewId,
+              previous,
+              active,
+            )
+          : catalogued;
+      if (!active() || _cancelled) return;
       result = AnalysisResult(
         session: session,
         engine: engine,
         intervalMs: interval,
-        frames: catalogued,
+        frames: filled,
         regions: [...?previous?.regions, ?region],
         elapsedMs: (previous?.elapsedMs ?? 0) + timer.elapsedMilliseconds,
       );
@@ -217,6 +240,49 @@ class AnalysisController extends Notifier<AnalysisState> {
         }
       }
     }
+  }
+
+  /// 사람을 놓친 프레임을 앞뒤 위치로 예상하고, 그 주변을 확대해 한 번 더 찾습니다.
+  /// 이 단계가 실패하거나 지원되지 않는 빌드여도 기본 분석 결과는 그대로 사용합니다.
+  Future<List<PoseFrame>> _fillGaps(
+    String id,
+    PoseSession session,
+    List<PoseFrame> frames,
+    int firstPersonId,
+    AnalysisResult? previous,
+    bool Function() active,
+  ) {
+    final service = ref.read(poseServiceProvider);
+    final engines = state.engines;
+    void progress(int done) {
+      // 이어서 찾을 범위가 결과에 따라 늘어나 전체 개수를 미리 알 수 없습니다.
+      state = AnalysisState(
+        phase: AnalysisPhase.refining,
+        engines: engines,
+        completed: done,
+        result: previous,
+      );
+    }
+
+    progress(0);
+    return GapFiller().fill(
+      frames,
+      width: session.width,
+      height: session.height,
+      firstPersonId: firstPersonId,
+      active: () => active() && !_cancelled,
+      onProgress: progress,
+      find: (request) async {
+        try {
+          return await service
+              .refine(id, request.timeMs, request.region)
+              .timeout(const Duration(seconds: 30));
+        } catch (error) {
+          debugPrint('놓친 구간 다시 찾기 중단: $error');
+          rethrow;
+        }
+      },
+    );
   }
 
   void cancel() {
@@ -294,6 +360,24 @@ class AnalysisController extends Notifier<AnalysisState> {
         error: _message(error),
       );
     }
+  }
+
+  /// 선택한 사람을 해제합니다. 감지한 후보와 번호는 그대로 두고 추적 결과만 지웁니다.
+  void clearTarget() {
+    final result = state.result;
+    if (result == null ||
+        state.saving ||
+        state.busy ||
+        (result.selectedPersonId == null && result.tracked.isEmpty)) {
+      return;
+    }
+    // 계산 중이던 이전 선택 결과가 늦게 도착해도 해제 상태를 덮어쓰지 않게 합니다.
+    _generation++;
+    state = AnalysisState(
+      phase: AnalysisPhase.ready,
+      engines: state.engines,
+      result: result.withoutTracking(),
+    );
   }
 
   Future<void> save(String sourceName) async {

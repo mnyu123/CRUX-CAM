@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../core/media/media_service.dart';
+import '../../../core/media/playback_scrubber.dart';
 import '../../media/models/media_info.dart';
 import '../../crop/presentation/crop_screen.dart';
 import '../../media/presentation/media_formatters.dart';
@@ -126,10 +127,35 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
   }
 
   Future<void> _seek(int ms) async {
+    final player = _player;
+    if (player == null) return;
     try {
-      await _player?.seekTo(Duration(milliseconds: ms));
+      // 연속 탐색이 겹치면 소리가 깨질 수 있어 마지막 위치만 차례로 보냅니다.
+      await PlaybackScrubber.of(player).seek(Duration(milliseconds: ms));
     } catch (_) {
       if (mounted) setState(() => _playerError = '이 시점으로 이동하지 못했습니다.');
+    }
+  }
+
+  Future<void> _scrubStart() async {
+    final player = _player;
+    if (player == null || !player.value.isInitialized) return;
+    try {
+      await PlaybackScrubber.of(player).start();
+    } catch (_) {}
+  }
+
+  Future<void> _scrubEnd() async {
+    final player = _player;
+    if (player == null) return;
+    try {
+      await PlaybackScrubber.of(player).end(
+        canResume: () =>
+            mounted &&
+            WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+      );
+    } catch (_) {
+      if (mounted) setState(() => _playerError = '재생 상태를 바꾸지 못했습니다.');
     }
   }
 
@@ -152,7 +178,36 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
       (f) => f.bodies.any((b) => b.usable),
     );
     if (first >= 0) await _seek(result.frames[first].timeMs);
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    _guideSelection(result);
+  }
+
+  /// 분석이 끝났지만 크롭할 사람을 고르지 않은 경우, 다음에 할 일을 짧게 알려줍니다.
+  void _guideSelection(AnalysisResult result) {
+    if (result.selectedPersonId != null) return;
+    _notify(
+      result.detectedCount == 0
+          ? '사람을 찾지 못했어요. 다른 모델로 다시 분석하거나 놓친 사람 영역을 추가해주세요.'
+          : '분석이 끝났어요. 영상 아래 "사람 번호"를 눌러 크롭할 클라이머를 선택해주세요.',
+    );
+  }
+
+  void _notify(String message) {
+    // 같은 안내가 연달아 쌓이지 않도록 이전 알림을 닫고 새로 보여줍니다.
+    // 넓은 화면에서는 영상이 왼쪽에 있으므로 알림을 오른쪽 설정 영역 위에만 띄워 재생 버튼을 가리지 않습니다.
+    final width = MediaQuery.sizeOf(context).width;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+          margin: width >= 700
+              ? EdgeInsets.fromLTRB(width * 3 / 5 + 8, 0, 8, 8)
+              : null,
+        ),
+      );
   }
 
   Future<void> _openCrop(AnalysisResult result) async {
@@ -207,6 +262,8 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
               AnalysisPhase.preparing => '모델과 영상을 준비하고 있습니다…',
               AnalysisPhase.cancelling => '분석을 취소하고 자원을 정리하고 있습니다…',
               AnalysisPhase.tracking => '선택한 클라이머의 움직임을 연결하고 있습니다…',
+              AnalysisPhase.refining =>
+                '놓친 구간을 확대해 다시 찾고 있습니다… (${state.completed}개 확인)',
               _ => '${state.completed} / ${state.total} 프레임 분석 중',
             }),
             TextButton(
@@ -296,6 +353,42 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
             const Text(
               '번호는 위치와 움직임으로 연결합니다. 겹침에서는 구분을 보류하고 긴 가림 뒤에는 새 번호가 생길 수 있으니 대상을 확인해주세요.',
             ),
+            if (result.selectedPersonId == null && !_drawingRegion) ...[
+              const SizedBox(height: 12),
+              Card(
+                key: const Key('select-person-hint'),
+                color: scheme.secondaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Icon(Icons.touch_app, color: scheme.onSecondaryContainer),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          '다음 단계: 영상 아래의 "사람 1" 같은 번호 중 클라이머를 눌러 선택하면 크롭 미리보기로 넘어갈 수 있어요.',
+                          style: TextStyle(color: scheme.onSecondaryContainer),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              // 선택 전에도 버튼 자리를 보여 주고, 누르면 왜 넘어갈 수 없는지 알려줍니다.
+              FilledButton.tonalIcon(
+                key: const Key('crop-needs-person'),
+                onPressed: state.busy || state.saving
+                    ? null
+                    : () => _notify(
+                        result.detectedCount == 0
+                            ? '감지된 사람이 없어 크롭할 수 없어요. 다른 모델로 다시 분석하거나 놓친 사람 영역을 추가해주세요.'
+                            : '먼저 영상 아래의 사람 번호를 눌러 크롭할 클라이머를 선택해주세요.',
+                      ),
+                icon: const Icon(Icons.crop),
+                label: const Text('크롭 미리보기 (사람 선택 필요)'),
+              ),
+            ],
             if (tracked != null) ...[
               const SizedBox(height: 12),
               FilledButton.icon(
@@ -453,14 +546,30 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
           _preview(result, frame, target, disabled, previewHeight),
           if (result != null && frame != null) ...[
             const SizedBox(height: 8),
-            Text(
-              result.selectedPersonId == null
-                  ? '추적할 사람 선택'
-                  : '추적 대상: 사람 ${result.selectedPersonId}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelLarge,
-            ),
+            if (result.selectedPersonId == null)
+              Row(
+                key: const Key('select-person-title'),
+                children: [
+                  Icon(Icons.touch_app, size: 18, color: scheme.primary),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      '클라이머 번호를 눌러 선택하세요',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelLarge
+                          ?.copyWith(color: scheme.primary),
+                    ),
+                  ),
+                ],
+              )
+            else
+              Text(
+                '추적 대상: 사람 ${result.selectedPersonId} (다시 누르면 해제)',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
             Row(
               children: [
                 // 후보가 많아도 줄이 늘어나 영상을 가리지 않도록 가로로 넘깁니다.
@@ -490,6 +599,12 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                                     ? '구분 중'
                                     : '사람 ${frame.personIdAt(i)}',
                               ),
+                              tooltip:
+                                  frame.personIdAt(i) != null &&
+                                      frame.personIdAt(i) ==
+                                          result.selectedPersonId
+                                  ? '다시 누르면 선택 해제'
+                                  : null,
                               backgroundColor:
                                   frame.personIdAt(i) != null &&
                                       frame.personIdAt(i) ==
@@ -503,6 +618,12 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                                   ? null
                                   : () {
                                       unawaited(_pause());
+                                      // 이미 선택한 사람을 다시 누르면 선택을 해제합니다.
+                                      if (frame.personIdAt(i) ==
+                                          result.selectedPersonId) {
+                                        _analysis.clearTarget();
+                                        return;
+                                      }
                                       unawaited(
                                         _analysis.selectTarget(
                                           result.indexAt(position),
@@ -596,9 +717,16 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
                         _player!.value.duration.inMilliseconds.toDouble(),
                       ),
                     ),
+                    // 누르거나 끄는 동안에는 잠시 멈췄다가, 손을 떼면 원래 재생 상태로 되돌립니다.
+                    onChangeStart: state.busy || _drawingRegion
+                        ? null
+                        : (_) => unawaited(_scrubStart()),
                     onChanged: state.busy || _drawingRegion
                         ? null
                         : (v) => unawaited(_seek(v.round())),
+                    onChangeEnd: state.busy || _drawingRegion
+                        ? null
+                        : (_) => unawaited(_scrubEnd()),
                   ),
                 ),
                 Text(
@@ -621,7 +749,13 @@ class _AnalysisScreenState extends ConsumerState<AnalysisScreen>
         _regionError = null;
       });
       await _analysis.analyze(widget.info, result.engine, _fps, region: region);
-      if (mounted) setState(() => _regionRect = null);
+      if (!mounted) return;
+      setState(() => _regionRect = null);
+      // 추가 분석이 성공하면 번호가 다시 정리되어 대상을 다시 골라야 합니다.
+      final next = ref.read(analysisControllerProvider);
+      if (next.result != null && next.result != result && next.error == null) {
+        _guideSelection(next.result!);
+      }
     } on FormatException catch (error) {
       if (mounted) setState(() => _regionError = error.message);
     }

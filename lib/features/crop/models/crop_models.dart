@@ -18,29 +18,44 @@ class CropOptions {
     this.ratio = CropRatio.portrait,
     this.zoom = 1,
     this.smooth = true,
+    this.offsetX = 0,
+    this.offsetY = 0,
   });
   final CropRatio ratio;
   final double zoom;
   final bool smooth;
+  // 자동 추적 위치에서 화면 전체 크기를 기준으로 더 이동할 거리입니다.
+  final double offsetX, offsetY;
   // 별도 실행 공간에서 돌아온 설정도 내용이 같으면 같은 설정으로 판단합니다.
   @override
   bool operator ==(Object other) =>
       other is CropOptions &&
       ratio == other.ratio &&
       zoom == other.zoom &&
-      smooth == other.smooth;
+      smooth == other.smooth &&
+      offsetX == other.offsetX &&
+      offsetY == other.offsetY;
   @override
-  int get hashCode => Object.hash(ratio, zoom, smooth);
-  CropOptions copyWith({CropRatio? ratio, double? zoom, bool? smooth}) =>
-      CropOptions(
-        ratio: ratio ?? this.ratio,
-        zoom: zoom ?? this.zoom,
-        smooth: smooth ?? this.smooth,
-      );
+  int get hashCode => Object.hash(ratio, zoom, smooth, offsetX, offsetY);
+  CropOptions copyWith({
+    CropRatio? ratio,
+    double? zoom,
+    bool? smooth,
+    double? offsetX,
+    double? offsetY,
+  }) => CropOptions(
+    ratio: ratio ?? this.ratio,
+    zoom: zoom ?? this.zoom,
+    smooth: smooth ?? this.smooth,
+    offsetX: offsetX ?? this.offsetX,
+    offsetY: offsetY ?? this.offsetY,
+  );
   Map<String, dynamic> toJson() => {
     'ratio': ratio.name,
     'zoom': zoom,
     'smooth': smooth,
+    'offsetX': offsetX,
+    'offsetY': offsetY,
   };
 }
 
@@ -59,7 +74,9 @@ class CropRect {
   );
 }
 
-enum CropStatus { following, held, waiting }
+/// following: 찾은 위치를 따라감, bridged: 잠시 놓친 구간을 앞뒤 위치로 이음,
+/// held: 오래 놓쳐 마지막 영역 유지, waiting: 처음 찾기 전 넓은 영역 표시.
+enum CropStatus { following, bridged, held, waiting }
 
 class CropFrame {
   const CropFrame({
@@ -109,10 +126,8 @@ class CropTimeline {
     final a = frames[low];
     if (low == frames.length - 1) return a;
     final b = frames[low + 1];
-    // 놓친 구간에서 미래의 위치를 아는 것처럼 움직이지 않고 마지막 화면을 유지합니다.
-    if (a.status != CropStatus.following || b.status != CropStatus.following) {
-      return a;
-    }
+    // 크롭 경로는 놓친 구간까지 미리 계산되어 있으므로 상태와 관계없이 프레임 사이를 잇습니다.
+    // 유지 구간은 앞뒤 영역이 같아 움직이지 않습니다. 내보내기도 같은 방식으로 계산합니다.
     final fraction = ((time - a.timeMs) / (b.timeMs - a.timeMs)).clamp(
       0.0,
       1.0,

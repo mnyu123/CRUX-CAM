@@ -89,6 +89,104 @@ void main() {
       [.5, 0, 1.0, 1.0],
     ]);
   });
+  group('놓친 프레임 다시 찾기', () {
+    setUp(() {
+      // 2초 영상의 0.8초·1초에서 모델이 사람을 놓친 상황입니다.
+      service.durationMs = 2000;
+      service.onFrame = (t) => t == 800 || t == 1000 ? [] : null;
+    });
+    const longInfo = MediaInfo(
+      source: videoSource,
+      width: 640,
+      height: 480,
+      duration: Duration(seconds: 2),
+    );
+
+    test('예상 위치 주변을 다시 찾아 같은 번호로 붙이고 대상 추적에도 쓴다', () async {
+      service.onRefine = (t, region) => [bodyAt(.3 + t * .0001)];
+      await controller.analyze(longInfo, PoseEngine.mediaPipeFull, 5);
+      final state = container.read(analysisControllerProvider);
+      expect(state.phase, AnalysisPhase.ready);
+      expect(service.refines.map((r) => r.timeMs), [800, 1000]);
+      final region = service.refines.first.region;
+      expect(region.left, lessThan(.38));
+      expect(region.right, greaterThan(.38));
+      final result = state.result!;
+      expect(result.detectedCount, 10);
+      expect(result.frames[4].personIds, [1]);
+      await controller.selectTarget(0, 0);
+      expect(
+        container.read(analysisControllerProvider).result!.trackedCount,
+        10,
+      );
+      expect(service.closed, hasLength(1));
+    });
+
+    test('다시 찾기가 실패하거나 지원되지 않아도 기본 분석 결과는 유지한다', () async {
+      service.onRefine = (t, region) =>
+          throw MissingPluginException('refine 없음');
+      await controller.analyze(longInfo, PoseEngine.mediaPipeFull, 5);
+      final state = container.read(analysisControllerProvider);
+      expect(state.phase, AnalysisPhase.ready);
+      expect(state.error, isNull);
+      expect(state.result!.detectedCount, 8);
+      // 첫 실패 후에는 남은 요청을 보내지 않습니다.
+      expect(service.refines, hasLength(1));
+    });
+
+    test('다시 찾는 중 취소하면 이전 결과를 유지하고 세션을 닫는다', () async {
+      final pending = Completer<List<PoseBody>>();
+      service.onRefine = (t, region) => pending.future;
+      final running = controller.analyze(longInfo, PoseEngine.mediaPipeFull, 5);
+      // 번호 연결 계산이 별도 실행 공간에서 끝나 다시 찾기 단계에 들어갈 때까지 기다립니다.
+      for (var i = 0; i < 200 && service.refines.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(
+        container.read(analysisControllerProvider).phase,
+        AnalysisPhase.refining,
+      );
+      controller.cancel();
+      pending.completeError(PlatformException(code: 'cancelled'));
+      await running;
+      final state = container.read(analysisControllerProvider);
+      expect(state.phase, AnalysisPhase.cancelled);
+      expect(state.result, isNull);
+      expect(service.closed, isNotEmpty);
+    });
+  });
+  test('선택한 사람을 해제하면 후보 번호는 유지하고 추적 결과만 지운다', () async {
+    await controller.analyze(info, PoseEngine.mediaPipeFull, 5);
+    await controller.analyze(
+      info,
+      PoseEngine.mediaPipeFull,
+      2,
+      region: PoseRegion(.5, 0, 1, 1),
+    );
+    await controller.selectTarget(0, 1);
+    expect(
+      container.read(analysisControllerProvider).result!.selectedPersonId,
+      2,
+    );
+    controller.clearTarget();
+    final cleared = container.read(analysisControllerProvider);
+    expect(cleared.phase, AnalysisPhase.ready);
+    expect(cleared.error, isNull);
+    expect(cleared.result!.selectedPersonId, isNull);
+    expect(cleared.result!.tracked, isEmpty);
+    expect(cleared.result!.trackedCount, 0);
+    expect(cleared.result!.frames.first.personIds, [1, 2]);
+    expect(cleared.result!.regions, hasLength(1));
+    // 선택이 없으면 저장하지 않습니다.
+    await controller.save(info.source.name);
+    expect(container.read(analysisControllerProvider).savedPath, isNull);
+    // 해제 후 다른 사람을 다시 선택할 수 있습니다.
+    await controller.selectTarget(0, 0);
+    expect(
+      container.read(analysisControllerProvider).result!.selectedPersonId,
+      1,
+    );
+  });
   test('영역 추가 분석 취소와 준비 실패는 기존 선택과 분석을 보존한다', () async {
     await controller.analyze(info, PoseEngine.mediaPipeFull, 5);
     await controller.selectTarget(0, 0);
