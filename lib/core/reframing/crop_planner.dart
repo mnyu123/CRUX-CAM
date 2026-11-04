@@ -10,6 +10,11 @@ class CropPlanner {
   /// 더 긴 구간은 마지막 위치를 유지하다가, 다시 찾기 직전 이 시간 동안 새 위치로 옮겨 갑니다.
   static const approachMs = 1000;
 
+  static const _windowMs = 550;
+  static const _maxPanPerSecond = 1.65;
+  static const _zoomInPerSecond = .65;
+  static const _zoomOutPerSecond = 1.15;
+
   CropTimeline plan(AnalysisResult result, CropOptions options) {
     if (result.session.width <= 0 ||
         result.session.height <= 0 ||
@@ -74,12 +79,22 @@ class CropPlanner {
             math.max(.12, right - left) * 1.4 / relativeAspect,
           ) /
           options.zoom;
+      final boundsX = (left + right) / 2, boundsY = (top + bottom) / 2;
+      final raw = tracked[i].raw;
+      final torso = raw != null && raw.usable ? raw.center : body.center;
+      // 많이 확대하면 손발보다 몸통 쪽을 더 중심에 두어 팔을 뻗을 때 초점이 덜 흔들리게 합니다.
+      final torsoWeight = options.smooth ? (options.zoom - 1) * .5 : 0.0;
       desired[i] = around(
-        (left + right) / 2 + options.offsetX,
-        (top + bottom) / 2 + options.offsetY,
+        boundsX +
+            (torso.x.clamp(0.0, 1.0) - boundsX) * torsoWeight +
+            options.offsetX,
+        boundsY +
+            (torso.y.clamp(0.0, 1.0) - boundsY) * torsoWeight +
+            options.offsetY,
         height,
       );
     }
+    if (options.smooth) _removeSpikes(desired, tracked);
     final known = [
       for (var i = 0; i < desired.length; i++)
         if (desired[i] != null) i,
@@ -134,36 +149,41 @@ class CropPlanner {
       }
     }
 
-    // 3) 목표 영역을 시간 순서대로 부드럽게 따라갑니다.
-    var previous = targets.first.rect;
-    int? lastTime;
+    // 3) 앞뒤의 목표를 함께 보아 방향이 바뀌는 구간에서도 뒤늦게 쫓아가지 않게 합니다.
+    final path = targets.map((target) => target.rect).toList();
+    final averaged = options.smooth
+        ? _smoothTargets(path, tracked, around)
+        : path;
+    var previous = averaged.first;
     final frames = <CropFrame>[];
     for (var i = 0; i < targets.length; i++) {
-      final desiredRect = targets[i].rect;
+      final desiredRect = averaged[i];
       final time = tracked[i].timeMs;
-      if (options.smooth && lastTime != null) {
-        final dt = math.max(.001, (time - lastTime) / 1000);
-        final movement =
-            math.sqrt(
-              math.pow(desiredRect.centerX - previous.centerX, 2) +
-                  math.pow(desiredRect.centerY - previous.centerY, 2),
-            ) /
-            dt;
-        // 빠른 움직임에는 더 빨리 따라가고, 확대는 천천히·축소는 빠르게 적용합니다.
-        final pan = 1 - math.exp(-dt * (5 + movement * 15));
-        final scale =
-            1 - math.exp(-dt * (desiredRect.height > previous.height ? 12 : 3));
-        final moved = around(
-          previous.centerX + (desiredRect.centerX - previous.centerX) * pan,
-          previous.centerY + (desiredRect.centerY - previous.centerY) * pan,
-          previous.height + (desiredRect.height - previous.height) * scale,
-        );
-        // 위치가 그대로면 이전 영역을 그대로 써서 멈춘 구간이 정확히 같은 화면이 되게 합니다.
-        previous = _same(moved, previous) ? previous : moved;
+      if (options.smooth && i > 0) {
+        if (targets[i].status != CropStatus.held &&
+            targets[i].status != CropStatus.waiting) {
+          final dt = math.max(0.0, (time - tracked[i - 1].timeMs) / 1000);
+          // 확대율은 비율로 제한합니다. 같은 픽셀 변화도 작은 크롭에서는 더 크게 느껴집니다.
+          final zoom = math
+              .log(desiredRect.height / previous.height)
+              .clamp(-_zoomInPerSecond * dt, _zoomOutPerSecond * dt);
+          final candidate = around(
+            desiredRect.centerX,
+            desiredRect.centerY,
+            previous.height * math.exp(zoom),
+          );
+          // 경계에 걸려 크롭 중심이 밀리는 이동까지 포함해, 잘린 화면 크기 기준으로 제한합니다.
+          final movement = _distance(previous, candidate);
+          previous = movement > _maxPanPerSecond * dt
+              ? previous.interpolate(
+                  candidate,
+                  _maxPanPerSecond * dt / movement,
+                )
+              : candidate;
+        }
       } else {
         previous = desiredRect;
       }
-      lastTime = time;
       frames.add(
         CropFrame(timeMs: time, rect: previous, status: targets[i].status),
       );
@@ -179,9 +199,69 @@ class CropPlanner {
     );
   }
 
-  bool _same(CropRect a, CropRect b) =>
-      (a.left - b.left).abs() < 1e-9 &&
-      (a.top - b.top).abs() < 1e-9 &&
-      (a.width - b.width).abs() < 1e-9 &&
-      (a.height - b.height).abs() < 1e-9;
+  double _distance(CropRect a, CropRect b) {
+    final dx = (a.centerX - b.centerX) / math.min(a.width, b.width);
+    final dy = (a.centerY - b.centerY) / math.min(a.height, b.height);
+    return math.sqrt(dx * dx + dy * dy);
+  }
+
+  void _removeSpikes(List<CropRect?> path, List<TrackedFrame> frames) {
+    final original = List<CropRect?>.of(path);
+    for (var i = 1; i < path.length - 1; i++) {
+      final before = original[i - 1], at = original[i], after = original[i + 1];
+      if (before == null || at == null || after == null) continue;
+      final left = frames[i].timeMs - frames[i - 1].timeMs;
+      final right = frames[i + 1].timeMs - frames[i].timeMs;
+      if (left <= 0 || right <= 0 || left > _windowMs || right > _windowMs) {
+        continue;
+      }
+      final expected = before.interpolate(after, left / (left + right));
+      // 양옆이 같은 위치·크기인데 한 번만 벗어나면 짧은 오인식으로 보고 이어 줍니다.
+      // 여러 프레임에서 계속 이동하거나 다시 찾은 구간은 이 규칙으로 지우지 않습니다.
+      if (_distance(before, after) < .18 &&
+          math.log(after.height / before.height).abs() < .15 &&
+          (_distance(expected, at) > .28 ||
+              math.log(at.height / expected.height).abs() > .22)) {
+        path[i] = expected;
+      }
+    }
+  }
+
+  List<CropRect> _smoothTargets(
+    List<CropRect> path,
+    List<TrackedFrame> frames,
+    CropRect Function(double, double, double) around,
+  ) {
+    final relativeAspect = path.first.width / path.first.height;
+    return List.generate(path.length, (i) {
+      final time = frames[i].timeMs;
+      var mean = path[i];
+      var total = 1.0;
+      var start = i, end = i;
+      for (final direction in [-1, 1]) {
+        for (var j = i + direction; j >= 0 && j < path.length; j += direction) {
+          final elapsed = (frames[j].timeMs - time).abs();
+          if (elapsed >= _windowMs) break;
+          if (j < start) start = j;
+          if (j > end) end = j;
+          // 가까운 시점에 더 큰 비중을 둡니다. 같은 비율의 영역끼리 섞어 경계와 비율을 지킵니다.
+          final weight = 1 - elapsed / _windowMs;
+          total += weight;
+          mean = mean.interpolate(path[j], weight / total);
+        }
+      }
+      // 빠른 이동을 화면이 다 따라잡기 어렵다면 잠깐 여유를 넓혀 사람을 놓칠 가능성을 줄입니다.
+      // 앞쪽 위치도 미리 보므로 실제로 움직이기 시작한 뒤 갑자기 축소하지 않아도 됩니다.
+      var height = mean.height;
+      for (var j = start; j <= end; j++) {
+        final reach = math.max(
+          (path[j].centerX - mean.centerX).abs() / relativeAspect,
+          (path[j].centerY - mean.centerY).abs(),
+        );
+        final elapsed = (frames[j].timeMs - time).abs();
+        height = math.max(height, 3.4 * reach * (1 - elapsed / _windowMs));
+      }
+      return around(mean.centerX, mean.centerY, height);
+    });
+  }
 }
