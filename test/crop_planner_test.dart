@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:crux_cam/core/reframing/crop_planner.dart';
 import 'package:crux_cam/features/analysis/models/pose_models.dart';
 import 'package:crux_cam/features/crop/models/crop_models.dart';
@@ -9,26 +11,27 @@ AnalysisResult analysis(
   List<PoseBody?> bodies, {
   int width = 720,
   int height = 1280,
+  int intervalMs = 200,
 }) => AnalysisResult(
   session: PoseSession(
     id: 'crop-test',
     width: width,
     height: height,
-    durationMs: bodies.length * 200,
+    durationMs: bodies.length * intervalMs,
     storageDirectory: '/unused',
   ),
   engine: PoseEngine.mediaPipeFull,
-  intervalMs: 200,
+  intervalMs: intervalMs,
   elapsedMs: 0,
   selectedPersonId: 1,
   frames: List.generate(
     bodies.length,
-    (i) => poseFrame(i * 200, bodies[i] == null ? [] : [bodies[i]!]),
+    (i) => poseFrame(i * intervalMs, bodies[i] == null ? [] : [bodies[i]!]),
   ),
   tracked: List.generate(
     bodies.length,
     (i) => TrackedFrame(
-      timeMs: i * 200,
+      timeMs: i * intervalMs,
       status: bodies[i] == null ? TrackStatus.lost : TrackStatus.tracked,
       raw: bodies[i],
       corrected: bodies[i],
@@ -37,6 +40,102 @@ AnalysisResult analysis(
 );
 
 void main() {
+  test('한 번 튄 위치와 크기가 큰 확대에서도 크롭 화면을 흔들지 않는다', () {
+    final steady = bodyAt(.35);
+    final far = bodyAt(.8);
+    final spike = PoseBody([
+      for (final p in far.points)
+        PosePoint(.8 + (p.x - .8) * 2, .5 + (p.y - .5) * 2, p.z, p.confidence),
+    ]);
+    final result = analysis([steady, steady, spike, steady, steady]);
+    final direct = CropPlanner().plan(
+      result,
+      const CropOptions(zoom: 2.5, smooth: false),
+    );
+    final smooth = CropPlanner().plan(result, const CropOptions(zoom: 2.5));
+    expect(
+      direct.frames[2].rect.centerX - direct.frames[1].rect.centerX,
+      greaterThan(.3),
+    );
+    expect(
+      direct.frames[2].rect.height,
+      greaterThan(direct.frames[1].rect.height),
+    );
+    for (final frame in smooth.frames) {
+      expect(
+        frame.rect.centerX,
+        closeTo(smooth.frames.first.rect.centerX, 1e-9),
+      );
+      expect(frame.rect.height, closeTo(smooth.frames.first.rect.height, 1e-9));
+    }
+  });
+
+  test('빠른 이동과 재감지를 따라가되 출력 화면의 이동·확대 속도에 제한을 둔다', () {
+    for (final interval in [100, 200, 500]) {
+      final start = bodyAt(.25, y: .45);
+      final end = bodyAt(.7, y: .63);
+      final result = analysis([
+        start,
+        start,
+        bodyAt(.34, y: .5),
+        bodyAt(.45, y: .52),
+        null,
+        ...List.filled(12, end),
+        null,
+        null,
+      ], intervalMs: interval);
+      final timeline = CropPlanner().plan(
+        result,
+        const CropOptions(ratio: CropRatio.threeFour, zoom: 2.5),
+      );
+      final frames = timeline.frames;
+      for (var i = 1; i < frames.length; i++) {
+        final a = frames[i - 1].rect, b = frames[i].rect;
+        final dx = (b.centerX - a.centerX) / math.min(a.width, b.width);
+        final dy = (b.centerY - a.centerY) / math.min(a.height, b.height);
+        final dt = (frames[i].timeMs - frames[i - 1].timeMs) / 1000;
+        expect(
+          math.sqrt(dx * dx + dy * dy) / dt,
+          lessThanOrEqualTo(1.65 + 1e-8),
+        );
+        expect(
+          math.log(b.height / a.height) / dt,
+          inInclusiveRange(-.65 - 1e-8, 1.15 + 1e-8),
+        );
+      }
+      expect(frames.last.rect.centerX, closeTo(end.center.x, .01));
+      expect(frames.last.rect.centerY, closeTo(end.center.y, .04));
+      expect(frames.last.rect, same(frames[frames.length - 3].rect));
+    }
+  });
+
+  test('연속으로 빠르게 움직이면 잠깐 넓게 잡고 멈추면 설정한 확대 크기로 돌아간다', () {
+    final start = bodyAt(.28);
+    final end = bodyAt(.68);
+    final result = analysis([
+      ...List.filled(6, start),
+      for (var i = 1; i < 6; i++) bodyAt(.28 + i * .065),
+      ...List.filled(16, end),
+    ], intervalMs: 100);
+    final timeline = CropPlanner().plan(result, const CropOptions(zoom: 2.5));
+    final direct = CropPlanner().plan(
+      result,
+      const CropOptions(zoom: 2.5, smooth: false),
+    );
+    expect(
+      timeline.frames[9].rect.width,
+      greaterThan(direct.frames[9].rect.width * 1.15),
+    );
+    for (var i = 6; i < 12; i++) {
+      final torso = result.tracked[i].raw!.center;
+      final r = timeline.frames[i].rect;
+      expect(torso.x, inInclusiveRange(r.left, r.left + r.width));
+    }
+    expect(
+      timeline.frames.last.rect.width,
+      closeTo(direct.frames.last.rect.width, .001),
+    );
+  });
   test('3:4는 세로이며 위치 보정이 전체 경로에 적용되고 영상 밖으로 나가지 않는다', () {
     expect(CropRatio.threeFour.aspect, .75);
     final source = analysis([bodyAt(.4), bodyAt(.5)]);

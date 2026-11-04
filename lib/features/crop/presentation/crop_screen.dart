@@ -527,6 +527,9 @@ class _CropScreenState extends ConsumerState<CropScreen>
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('부드럽게 따라가기'),
+                          subtitle: const Text(
+                            '화면 튐을 줄이고, 빠르게 움직일 때 잠시 넓게 잡습니다.',
+                          ),
                           value: _options.smooth,
                           onChanged: _locked
                               ? null
